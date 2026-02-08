@@ -67,7 +67,7 @@ def _build_cfg(
         business=BusinessConfig(value_per_qualified=float(value_per_qualified)),
         splits=SplitsConfig(train_frac=0.6, calib_frac=0.2, test_frac=0.2),
         model=_default_model_cfg(model_type),
-        reporting=ReportingConfig(topk_frac=0.10, ece_bins=10),
+        reporting=ReportingConfig(topk_frac=0.10, ece_bins=10, min_segment_leads=30),
     )
 
 
