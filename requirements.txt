@@ -1,5 +1,2 @@
 # Hugging Face Spaces / Streamlit Community Cloud
--e .
-streamlit>=1.31
-lightgbm>=4.0
-
+-e .[ui]

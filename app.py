@@ -99,6 +99,20 @@ def _render_run_outputs(run_dir: Path) -> None:
             # Avoid breaking the UI if metadata is malformed.
             pass
 
+    drift_p = run_dir / "drift.json"
+    if drift_p.exists():
+        try:
+            drift = json.loads(drift_p.read_text())
+            st.subheader("Drift Summary (PSI)")
+            c1, c2, c3 = st.columns(3)
+            thr = drift.get("psi_threshold")
+            c1.metric("PSI threshold", str(thr) if thr is not None else "")
+            c2.metric("Flagged features", str(drift.get("n_flagged", 0)))
+            flagged = drift.get("flagged_columns") or []
+            c3.metric("Flagged list", ", ".join(flagged[:3]) + ("..." if len(flagged) > 3 else ""))
+        except Exception:
+            pass
+
     pred_p = run_dir / "predictions.csv"
     lb_c = run_dir / "leaderboard_campaign.csv"
     lb_a = run_dir / "leaderboard_adset.csv"
@@ -125,6 +139,12 @@ def _render_run_outputs(run_dir: Path) -> None:
             __import__("pandas").read_csv(lb_c).head(20),
             use_container_width=True,
         )
+        try:
+            top = __import__("pandas").read_csv(lb_c).head(20)
+            if "low_volume" in top.columns and bool(top["low_volume"].fillna(False).any()):
+                st.warning("Top campaign leaderboard includes low-volume segments. Interpret cautiously.")
+        except Exception:
+            pass
     if lb_a.exists():
         st.subheader("Adset Leaderboard (Top 20)")
         st.dataframe(__import__("pandas").read_csv(lb_a).head(20), use_container_width=True)
