@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from meta_elv.config import load_config
 from meta_elv.validate import validate_from_config
 
@@ -73,4 +71,3 @@ reporting:
     res = validate_from_config(cfg)
     assert not res.ok
     assert "spend" in "".join(res.errors)
-
