@@ -2,6 +2,15 @@
 
 This project is designed to read like a small **ML platform**: CSV contracts, self-serve CLI, reproducible runs, and a score-first demo UI.
 
+## Current Status (As Of 2026-02-08)
+
+- Week 1: Done (scaffolding, contracts, demo data, validate)
+- Week 2: Done (joins + maturity-safe labels + daily-ads leakage lag + rolling features)
+- Week 3: Mostly done (time split, calibration, metrics, baseline campaign-rate, report). LightGBM is optional and may require system OpenMP on macOS.
+- Week 4: Mostly done (ELV outputs, leaderboards, run metadata, model/data cards). Guardrails like min-volume warnings are still TODO.
+- Week 5: Done (Streamlit score-first demo + bundled synthetic demo model)
+- Week 6: Partial (CI exists; drift + batch scoring + expanded docs still TODO)
+
 ## Week 1 — Scaffolding + Contracts + Demo Data
 
 Goal: A stranger can run `elv demo` and see believable outputs (no real data).
@@ -41,7 +50,7 @@ Goal: Honest evaluation that is interpretable for non-ML readers.
 
 Work:
 - Time-based split after maturity filtering (train/calib/test).
-- Train logistic regression baseline and LightGBM.
+- Train logistic regression baseline and LightGBM (optional).
 - Calibrate probabilities on calibration split (sigmoid default).
 - Implement metrics: PR-AUC, Brier, lift@k, top-decile capture, simple ECE bins.
 - Generate `report.html` containing join summary, maturity summary, lift, calibration, metrics table.
@@ -107,4 +116,3 @@ Completion standard:
 - Scoring can optionally emit drift results and flag high PSI.
 - CI passes on PRs (tests include maturity + leakage + join strategy).
 - A stranger can succeed without asking repo-specific questions.
-

@@ -10,13 +10,20 @@ CSV-first, self-serve pipeline to predict **P(qualified within 14 days)** and co
 
 ```bash
 uv venv
-uv sync --extra dev --extra ui --extra lgbm
+uv sync --extra dev --extra ui
 
 . .venv/bin/activate
 elv demo
 ```
 
 Artifacts are written to `runs/<run_id>/` (predictions, leaderboards, report, metrics, profiles).
+
+`elv demo` is **score-first** by default using a bundled synthetic demo model (`src/meta_elv/assets/demo_model.joblib`).
+To rebuild the bundled demo model:
+
+```bash
+uv run -- python scripts/build_demo_model.py
+```
 
 Alternative install (no `uv`):
 
@@ -25,6 +32,10 @@ python -m venv .venv
 . .venv/bin/activate
 pip install -e ".[dev,ui,lgbm]"
 ```
+
+## LightGBM (Optional)
+LightGBM is supported (`model.model_type: lgbm`), but on some macOS setups you may need OpenMP:
+- `brew install libomp`
 
 ## Bring Your Own CSVs
 
