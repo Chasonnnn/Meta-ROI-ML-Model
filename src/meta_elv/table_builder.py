@@ -272,7 +272,6 @@ def build_table(cfg: RunConfig) -> BuildTableResult:
         else:
             is_mature = pd.Series([True] * len(leads), index=leads.index)
         is_negative = qualified_time.isna() & is_mature
-        is_unknown = ~is_mature
 
         leads["label"] = np.where(is_positive, 1, np.where(is_negative, 0, np.nan))
         leads["label_status"] = np.where(
