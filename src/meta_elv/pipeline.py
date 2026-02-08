@@ -33,12 +33,21 @@ def run_build_table(cfg: RunConfig, ctx: RunContext) -> dict[str, Any]:
         "schema_version": cfg.schema_version,
         "join": {"strategy": res.join_strategy, "match_rate": res.join_match_rate},
         "labeling": {"as_of_date": res.as_of_date.isoformat(), "counts": res.label_summary},
+        "leaderboards": {"min_segment_leads": int(cfg.reporting.min_segment_leads)},
     }
     write_metadata(ctx.run_dir, metadata)
     return {"result": res, "profile": profile, "metadata": metadata}
 
 
 def run_train(cfg: RunConfig, ctx: RunContext, *, max_labeled_rows: int | None = None) -> dict[str, Any]:
+    if cfg.paths.outcomes_path is None:
+        raise ValueError(
+            "outcomes_path is required for training. Provide paths.outcomes_path in config, "
+            "or use `elv score` for inference-only scoring."
+        )
+    if not Path(cfg.paths.outcomes_path).exists():
+        raise ValueError(f"outcomes_path does not exist: {cfg.paths.outcomes_path}")
+
     built = run_build_table(cfg, ctx)
     table = built["result"].table
 
@@ -79,7 +88,7 @@ def run_train(cfg: RunConfig, ctx: RunContext, *, max_labeled_rows: int | None =
 
     # Leaderboards (spend from ads.csv over the lead date range)
     ads = meta_csv.load_ads(cfg.paths.ads_path).df
-    lbs = compute_leaderboards(scored, ads)
+    lbs = compute_leaderboards(scored, ads, min_segment_leads=cfg.reporting.min_segment_leads)
     lbs["campaign"].to_csv(ctx.run_dir / "leaderboard_campaign.csv", index=False)
     # Only write adset leaderboard when we have adset keys.
     if "adset_id" in scored.columns and scored["adset_id"].notna().any():
@@ -135,7 +144,7 @@ def run_score(cfg: RunConfig, ctx: RunContext, model_path: Path) -> dict[str, An
     scored[keep_cols].to_csv(ctx.run_dir / "predictions.csv", index=False)
 
     ads = meta_csv.load_ads(cfg.paths.ads_path).df
-    lbs = compute_leaderboards(scored, ads)
+    lbs = compute_leaderboards(scored, ads, min_segment_leads=cfg.reporting.min_segment_leads)
     lbs["campaign"].to_csv(ctx.run_dir / "leaderboard_campaign.csv", index=False)
     if "adset_id" in scored.columns and scored["adset_id"].notna().any():
         lbs["adset"].to_csv(ctx.run_dir / "leaderboard_adset.csv", index=False)
