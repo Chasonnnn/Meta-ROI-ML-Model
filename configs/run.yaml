@@ -27,7 +27,7 @@ splits:
   test_frac: 0.2
 
 model:
-  model_type: lgbm  # lgbm | logreg
+  model_type: logreg  # lgbm | logreg
   calibration_method: sigmoid  # sigmoid | isotonic
   random_seed: 7
   lgbm_params:
@@ -45,4 +45,3 @@ model:
 reporting:
   topk_frac: 0.10
   ece_bins: 10
-

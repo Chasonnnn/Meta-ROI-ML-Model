@@ -138,6 +138,31 @@ def validate_from_config(cfg: RunConfig) -> ValidationResult:
             "null_pct": _null_pct(outcomes, OUTCOMES_REQUIRED),
         }
 
+    # Join-path sanity checks (warn loudly; table builder can still attempt name join fallback)
+    has_join_ids = False
+    for c in ["ad_id", "adset_id", "campaign_id"]:
+        if c in leads.columns and leads[c].notna().any():
+            has_join_ids = True
+            break
+    if not has_join_ids:
+        if cfg.paths.lead_to_ad_map_path is None:
+            warnings.append(
+                "leads.csv has no ad_id/adset_id/campaign_id. "
+                "Provide paths.lead_to_ad_map_path for stable joins, or expect name-based fallback warnings."
+            )
+        else:
+            # mapping presence already checked above; validate minimal columns if we can read
+            try:
+                lead_map = meta_csv.load_lead_to_ad_map(cfg.paths.lead_to_ad_map_path).df
+                if "lead_id" not in lead_map.columns:
+                    errors.append("lead_to_ad_map.csv missing required column: lead_id")
+                if not any(c in lead_map.columns for c in ["ad_id", "adset_id", "campaign_id"]):
+                    errors.append(
+                        "lead_to_ad_map.csv must include at least one of: ad_id, adset_id, campaign_id"
+                    )
+            except Exception as e:  # pragma: no cover
+                errors.append(f"Failed to read lead_to_ad_map.csv: {e}")
+
     ok = not errors
     return ValidationResult(ok=ok, errors=errors, warnings=warnings, details=details)
 

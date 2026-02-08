@@ -68,6 +68,49 @@ class RunConfig:
     reporting: ReportingConfig
 
 
+def config_to_dict(cfg: RunConfig) -> dict[str, Any]:
+    return {
+        "schema_version": cfg.schema_version,
+        "paths": {
+            "ads_path": str(cfg.paths.ads_path),
+            "leads_path": str(cfg.paths.leads_path),
+            "outcomes_path": str(cfg.paths.outcomes_path) if cfg.paths.outcomes_path is not None else None,
+            "lead_to_ad_map_path": str(cfg.paths.lead_to_ad_map_path)
+            if cfg.paths.lead_to_ad_map_path is not None
+            else None,
+        },
+        "label": {
+            "label_window_days": cfg.label.label_window_days,
+            "as_of_date": cfg.label.as_of_date,
+            "require_label_maturity": cfg.label.require_label_maturity,
+        },
+        "features": {
+            "ads_granularity": cfg.features.ads_granularity,
+            "feature_window_days": cfg.features.feature_window_days,
+            "feature_lag_days": cfg.features.feature_lag_days,
+        },
+        "business": {"value_per_qualified": cfg.business.value_per_qualified},
+        "splits": {
+            "train_frac": cfg.splits.train_frac,
+            "calib_frac": cfg.splits.calib_frac,
+            "test_frac": cfg.splits.test_frac,
+        },
+        "model": {
+            "model_type": cfg.model.model_type,
+            "calibration_method": cfg.model.calibration_method,
+            "random_seed": cfg.model.random_seed,
+            "lgbm_params": cfg.model.lgbm_params,
+            "logreg_params": cfg.model.logreg_params,
+        },
+        "reporting": {"topk_frac": cfg.reporting.topk_frac, "ece_bins": cfg.reporting.ece_bins},
+    }
+
+
+def save_config(cfg: RunConfig, path: str | Path) -> None:
+    path = Path(path)
+    path.write_text(yaml.safe_dump(config_to_dict(cfg), sort_keys=False))
+
+
 def _as_path(value: Any) -> Path | None:
     if value is None:
         return None
@@ -140,4 +183,3 @@ def load_config(path: str | Path) -> RunConfig:
     if cfg.label.label_window_days <= 0:
         raise ValueError("label_window_days must be > 0")
     return cfg
-
