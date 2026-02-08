@@ -1,0 +1,48 @@
+# Example config (copy and edit)
+schema_version: 1
+
+paths:
+  ads_path: data/byo/ads.csv
+  leads_path: data/byo/leads.csv
+  outcomes_path: data/byo/outcomes.csv
+  lead_to_ad_map_path: null  # e.g. data/byo/lead_to_ad_map.csv
+
+label:
+  label_window_days: 14
+  as_of_date: null           # null => auto (max lead created_time date)
+  require_label_maturity: true
+
+features:
+  ads_granularity: daily
+  feature_window_days: 7
+  feature_lag_days: 1
+
+business:
+  value_per_qualified: 1.0
+
+splits:
+  # If null, computed automatically from labeled (matured) leads distribution.
+  train_frac: 0.6
+  calib_frac: 0.2
+  test_frac: 0.2
+
+model:
+  model_type: lgbm  # lgbm | logreg
+  calibration_method: sigmoid  # sigmoid | isotonic
+  random_seed: 7
+  lgbm_params:
+    n_estimators: 400
+    learning_rate: 0.05
+    num_leaves: 31
+    min_child_samples: 50
+    subsample: 0.9
+    colsample_bytree: 0.9
+    reg_lambda: 1.0
+  logreg_params:
+    C: 1.0
+    max_iter: 2000
+
+reporting:
+  topk_frac: 0.10
+  ece_bins: 10
+
