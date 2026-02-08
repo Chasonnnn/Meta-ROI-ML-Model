@@ -9,18 +9,26 @@ import pandas as pd
 from joblib import load
 
 from .config import RunConfig
+from .drift import compute_psi_for_columns_from_reference
 
 
 @dataclass(frozen=True)
 class ModelBundle:
     model: Any
     feature_columns: dict[str, list[str]]
+    drift_reference: dict[str, Any] | None = None
+    drift: dict[str, Any] | None = None
 
 
 def load_model_bundle(model_path: Path) -> ModelBundle:
     obj = load(model_path)
     if isinstance(obj, dict) and "model" in obj and "feature_columns" in obj:
-        return ModelBundle(model=obj["model"], feature_columns=obj["feature_columns"])
+        return ModelBundle(
+            model=obj["model"],
+            feature_columns=obj["feature_columns"],
+            drift_reference=obj.get("drift_reference"),
+            drift=obj.get("drift"),
+        )
     # Back-compat: raw sklearn model saved directly
     return ModelBundle(model=obj, feature_columns={"numeric": [], "categorical": []})
 
@@ -39,6 +47,49 @@ def score_table(cfg: RunConfig, table: pd.DataFrame, bundle: ModelBundle) -> pd.
     df["elv"] = df["p_qualified_14d"] * df["value_per_qualified"]
     df["score_rank"] = (-df["p_qualified_14d"]).rank(method="first").astype(int)
     return df
+
+
+def compute_drift_against_reference(
+    table: pd.DataFrame, bundle: ModelBundle, *, bins: int | None = None
+) -> dict[str, Any] | None:
+    """
+    Compute PSI drift for a score-only run relative to the training reference stored in the model bundle.
+    """
+    if not bundle.drift_reference:
+        return None
+    ref = bundle.drift_reference
+    cols = None
+    if bundle.drift and isinstance(bundle.drift, dict):
+        cols = bundle.drift.get("psi_columns")
+        if isinstance(cols, list):
+            cols = [str(c) for c in cols]
+        else:
+            cols = None
+
+    psi = compute_psi_for_columns_from_reference(ref, table, cols=cols)
+    threshold = None
+    if bundle.drift and isinstance(bundle.drift, dict):
+        threshold = bundle.drift.get("psi_threshold")
+
+    flagged = []
+    if threshold is not None:
+        try:
+            thr = float(threshold)
+            flagged = [
+                c
+                for c, r in (psi.get("columns") or {}).items()
+                if (r or {}).get("psi") is not None and float(r["psi"]) >= thr
+            ]
+        except Exception:
+            flagged = []
+
+    return {
+        "psi_reference_bins": ref.get("bins"),
+        "psi_scoring_vs_train": psi,
+        "psi_threshold": threshold,
+        "flagged_columns": flagged,
+        "n_flagged": int(len(flagged)),
+    }
 
 
 def _ads_spend_by_level(

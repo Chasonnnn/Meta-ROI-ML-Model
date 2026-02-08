@@ -14,7 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from ..config import RunConfig
-from ..drift import compute_psi_for_columns
+from ..drift import build_psi_reference_for_columns, compute_psi_for_columns
 from .calibration import CalibratedModel, fit_calibrator
 from .metrics import calibration_bins, compute_core_metrics, compute_lift_at_k, lift_curve
 from .split import TimeSplit, time_split
@@ -260,6 +260,7 @@ def train_and_evaluate(cfg: RunConfig, table: pd.DataFrame, *, max_labeled_rows:
     # Minimal drift check: PSI of selected numeric features between train and test splits.
     psi_cols = _select_drift_columns(cfg, numeric_cols)
     psi = compute_psi_for_columns(train_df, test_df, cols=psi_cols, bins=10)
+    psi_ref = build_psi_reference_for_columns(train_df, cols=psi_cols, bins=10)
     threshold = 0.2
     flagged = [
         c
@@ -272,6 +273,8 @@ def train_and_evaluate(cfg: RunConfig, table: pd.DataFrame, *, max_labeled_rows:
         "flagged_columns": flagged,
         "n_flagged": int(len(flagged)),
     }
+    bundle["drift_reference"] = psi_ref
+    bundle["drift"] = {"psi_threshold": threshold, "psi_columns": psi_cols}
 
     return TrainArtifacts(model=model, model_bundle=bundle, metrics=metrics, split=split)
 
