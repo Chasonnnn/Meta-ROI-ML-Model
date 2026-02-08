@@ -11,9 +11,9 @@ from .modeling.train import save_model_bundle, train_and_evaluate
 from .profile import build_data_profile, write_data_profile
 from .reporting import write_report
 from .run_artifacts import RunContext, write_metadata
-from .scoring import compute_leaderboards, load_model_bundle, score_table
+from .scoring import compute_drift_against_reference, compute_leaderboards, load_model_bundle, score_table
 from .table_builder import build_table
-from .utils import write_json
+from .utils import try_get_git_sha_short, write_json
 
 
 def write_table(run_dir: Path, table: pd.DataFrame) -> Path:
@@ -30,6 +30,7 @@ def run_build_table(cfg: RunConfig, ctx: RunContext) -> dict[str, Any]:
     write_data_profile(ctx.run_dir, profile)
 
     metadata = {
+        "git_sha": try_get_git_sha_short(ctx.repo_root),
         "schema_version": cfg.schema_version,
         "join": {"strategy": res.join_strategy, "match_rate": res.join_match_rate},
         "labeling": {"as_of_date": res.as_of_date.isoformat(), "counts": res.label_summary},
@@ -119,6 +120,7 @@ def run_score(cfg: RunConfig, ctx: RunContext, model_path: Path) -> dict[str, An
     table = built["result"].table
 
     bundle = load_model_bundle(model_path)
+    drift = compute_drift_against_reference(table, bundle)
     scored = score_table(cfg, table, bundle)
 
     keep_cols = [
@@ -148,6 +150,9 @@ def run_score(cfg: RunConfig, ctx: RunContext, model_path: Path) -> dict[str, An
     lbs["campaign"].to_csv(ctx.run_dir / "leaderboard_campaign.csv", index=False)
     if "adset_id" in scored.columns and scored["adset_id"].notna().any():
         lbs["adset"].to_csv(ctx.run_dir / "leaderboard_adset.csv", index=False)
+
+    if drift is not None:
+        write_json(ctx.run_dir / "drift.json", drift)
 
     report_path = write_report(ctx.run_dir)
     return {"run_dir": ctx.run_dir, "report_path": report_path}
