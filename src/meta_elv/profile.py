@@ -73,6 +73,10 @@ def write_data_profile(run_dir: Path, profile: dict[str, Any]) -> None:
     lines.append(
         f"- Labels (pos/neg/unk): {counts.get('positive', 0)}/{counts.get('negative', 0)}/{counts.get('unknown', 0)}"
     )
+    feats = ((profile.get("details") or {}).get("features") or {})
+    if feats:
+        lines.append(f"- Feature window days: {feats.get('feature_window_days')}")
+        lines.append(f"- Feature lag days: {feats.get('feature_lag_days')}")
     pr = labeling.get("positive_rate_labeled")
     if pr is not None:
         lines.append(f"- Positive rate (labeled only): {pr:.2%}")
@@ -85,4 +89,3 @@ def write_data_profile(run_dir: Path, profile: dict[str, Any]) -> None:
             lines.append(f"- {k}: {v:.1%}")
 
     (run_dir / "data_profile.md").write_text("\n".join(lines) + "\n")
-
