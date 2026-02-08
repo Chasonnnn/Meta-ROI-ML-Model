@@ -10,22 +10,17 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from ..utils import read_json
+
 # Ensure Matplotlib can write its cache/config in restricted environments (e.g., sandbox, HF Spaces).
 _mpl_dir = Path(tempfile.gettempdir()) / "meta_elv_matplotlib"
 _mpl_dir.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(_mpl_dir))
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-import matplotlib  # noqa: E402
+def _fig_to_base64_png(fig: Any) -> str:
+    import matplotlib.pyplot as plt
 
-matplotlib.use("Agg")  # must be set before importing pyplot
-
-import matplotlib.pyplot as plt  # noqa: E402
-
-from ..utils import read_json
-
-
-def _fig_to_base64_png(fig: plt.Figure) -> str:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=160, bbox_inches="tight")
     plt.close(fig)
@@ -39,6 +34,11 @@ def _df_to_html(df: pd.DataFrame, max_rows: int = 20) -> str:
 
 
 def _plot_lift(lift_data: dict[str, Any]) -> str | None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     xs = lift_data.get("population_frac")
     ys = lift_data.get("positive_capture_frac")
     if not xs or not ys:
@@ -57,6 +57,11 @@ def _plot_lift(lift_data: dict[str, Any]) -> str | None:
 
 
 def _plot_calibration(cal: dict[str, Any]) -> str | None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     bins = cal.get("bins") or []
     xs = []
     ys = []
@@ -101,6 +106,11 @@ def write_report(run_dir: Path) -> Path:
         metadata = read_json(run_dir / "metadata.json")
     except Exception:
         metadata = None
+    drift_json = None
+    try:
+        drift_json = read_json(run_dir / "drift.json")
+    except Exception:
+        drift_json = None
 
     min_segment_leads = None
     if metadata:
@@ -236,7 +246,7 @@ def write_report(run_dir: Path) -> Path:
         parts.append("</div>")
         parts.append("</div>")
     else:
-        parts.append("<div class='warn'>Missing metrics.json. Run `elv train` first.</div>")
+        parts.append("<div class='warn'>No evaluation metrics found (metrics.json missing). This is likely a score-only run.</div>")
 
     parts.append("<div class='grid'>")
     parts.append("<div class='card'><h2>Lift</h2>")
@@ -255,7 +265,11 @@ def write_report(run_dir: Path) -> Path:
 
     # Drift (PSI) section
     drift = (metrics or {}).get("drift") if metrics else None
+    if drift is None and drift_json:
+        drift = drift_json
     psi = (drift or {}).get("psi_train_vs_test") if drift else None
+    if psi is None and drift is not None:
+        psi = drift.get("psi_scoring_vs_train")
     psi_cols = (psi or {}).get("columns") if psi else None
     if psi_cols:
         try:
@@ -271,8 +285,9 @@ def write_report(run_dir: Path) -> Path:
             threshold = (drift or {}).get("psi_threshold")
             n_flagged = (drift or {}).get("n_flagged")
             parts.append("<div class='card'><h2>Drift (PSI)</h2>")
+            drift_label = "Train vs test PSI" if (metrics or {}).get("drift") else "Scoring vs train PSI"
             parts.append(
-                f"<p class='subtle'>Train vs test PSI on selected numeric features. "
+                f"<p class='subtle'>{drift_label} on selected numeric features. "
                 f"threshold={threshold} | flagged={n_flagged}</p>"
             )
             parts.append(_df_to_html(psi_df, max_rows=20))
