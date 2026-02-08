@@ -43,7 +43,7 @@ def test_label_maturity_unknowns_excluded(tmp_path: Path) -> None:
             lgbm_params={},
             logreg_params={"C": 1.0, "max_iter": 2000},
         ),
-        reporting=ReportingConfig(topk_frac=0.10, ece_bins=10),
+        reporting=ReportingConfig(topk_frac=0.10, ece_bins=10, min_segment_leads=30),
     )
 
     # Minimal ads file (required for joins/features)
@@ -123,4 +123,3 @@ def test_label_maturity_unknowns_excluded(tmp_path: Path) -> None:
 
     assert t.loc["l_pos", "label_status"] == "positive"
     assert int(t.loc["l_pos", "label"]) == 1
-

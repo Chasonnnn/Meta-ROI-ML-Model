@@ -42,7 +42,7 @@ def test_daily_ads_feature_lag_excludes_same_day(tmp_path: Path) -> None:
             lgbm_params={},
             logreg_params={"C": 1.0, "max_iter": 2000},
         ),
-        reporting=ReportingConfig(topk_frac=0.10, ece_bins=10),
+        reporting=ReportingConfig(topk_frac=0.10, ece_bins=10, min_segment_leads=30),
     )
 
     # Ads spend is 1/day for 7 days, then huge spend on the lead day.
@@ -92,4 +92,3 @@ def test_daily_ads_feature_lag_excludes_same_day(tmp_path: Path) -> None:
     spend_sum_col = "spend_sum_7d"
     assert spend_sum_col in t.columns
     assert float(t.loc[0, spend_sum_col]) == 7.0
-
