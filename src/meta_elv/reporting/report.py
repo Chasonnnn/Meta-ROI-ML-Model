@@ -2,166 +2,213 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
-import numpy as np
 import pandas as pd
 
+from ..utils import read_json
 
-def _fig_to_base64(fig) -> str:
+
+def _fig_to_base64_png(fig: plt.Figure) -> str:
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=140, bbox_inches="tight")
+    fig.savefig(buf, format="png", dpi=160, bbox_inches="tight")
     plt.close(fig)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return b64
 
 
-def _plot_lift(df: pd.DataFrame) -> str | None:
-    if "label" not in df.columns or df["label"].notna().sum() < 10:
+def _df_to_html(df: pd.DataFrame, max_rows: int = 20) -> str:
+    d = df.head(max_rows).copy()
+    return d.to_html(index=False, escape=True)
+
+
+def _plot_lift(lift_data: dict[str, Any]) -> str | None:
+    xs = lift_data.get("population_frac")
+    ys = lift_data.get("positive_capture_frac")
+    if not xs or not ys:
         return None
-    d = df[df["label"].notna()].copy()
-    d = d.sort_values("p_qualified_14d", ascending=False).reset_index(drop=True)
-    y = d["label"].astype(int).to_numpy()
-    total_pos = y.sum()
-    if total_pos <= 0:
-        return None
-    cum_pos = np.cumsum(y)
-    frac_leads = (np.arange(len(d)) + 1) / len(d)
-    frac_pos = cum_pos / total_pos
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(frac_leads, frac_pos, label="Model")
-    ax.plot([0, 1], [0, 1], "--", label="Random")
-    ax.set_title("Lift / Capture Curve")
+    fig, ax = plt.subplots(figsize=(5.5, 4))
+    ax.plot(xs, ys, label="Model")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Random")
+    ax.set_title("Lift Curve (Cumulative Capture)")
     ax.set_xlabel("Fraction of leads contacted")
-    ax.set_ylabel("Fraction of qualified leads captured")
-    ax.legend(loc="lower right")
+    ax.set_ylabel("Fraction of qualified captured")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3)
-    return _fig_to_base64(fig)
+    ax.legend()
+    return _fig_to_base64_png(fig)
 
 
-def _plot_calibration(cal: dict[str, Any] | None) -> str | None:
-    if not cal:
+def _plot_calibration(cal: dict[str, Any]) -> str | None:
+    bins = cal.get("bins") or []
+    xs = []
+    ys = []
+    for b in bins:
+        if b.get("count", 0) and b.get("p_mean") is not None and b.get("y_rate") is not None:
+            xs.append(b["p_mean"])
+            ys.append(b["y_rate"])
+    if not xs:
         return None
-    mean_pred = cal.get("mean_pred") or []
-    frac_pos = cal.get("frac_pos") or []
-    if len(mean_pred) < 2 or len(frac_pos) < 2:
-        return None
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(mean_pred, frac_pos, marker="o", label="Calibration")
-    ax.plot([0, 1], [0, 1], "--", label="Perfect")
-    ax.set_title("Calibration Curve")
+    fig, ax = plt.subplots(figsize=(5.5, 4))
+    ax.plot(xs, ys, marker="o", label="Observed")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="gray", label="Perfect")
+    ece = cal.get("ece")
+    title = "Calibration"
+    if ece is not None:
+        title += f" (ECE={ece:.3f})"
+    ax.set_title(title)
     ax.set_xlabel("Mean predicted probability")
-    ax.set_ylabel("Fraction positive")
-    ax.legend(loc="upper left")
+    ax.set_ylabel("Empirical positive rate")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
     ax.grid(True, alpha=0.3)
-    return _fig_to_base64(fig)
+    ax.legend()
+    return _fig_to_base64_png(fig)
 
 
-def _df_to_html_table(df: pd.DataFrame, max_rows: int = 20) -> str:
-    if df is None:
-        return "<p>(missing)</p>"
-    d = df.head(max_rows)
-    return d.to_html(index=False, escape=True, float_format=lambda x: f"{x:.4g}")
-
-
-def write_report_html(
-    run_dir: Path,
-    *,
-    metadata: dict[str, Any] | None = None,
-    data_profile: dict[str, Any] | None = None,
-    metrics: dict[str, Any] | None = None,
-    scored: pd.DataFrame | None = None,
-    leaderboards: dict[str, pd.DataFrame] | None = None,
-    drift: dict[str, Any] | None = None,
-) -> Path:
+def write_report(run_dir: Path) -> Path:
     run_dir = Path(run_dir)
 
-    lift_png = _plot_lift(scored) if scored is not None else None
-    cal_png = None
-    if metrics and isinstance(metrics.get("eval_test"), dict):
-        cal_png = _plot_calibration(metrics["eval_test"].get("calibration"))
+    data_profile = None
+    metrics = None
+    try:
+        data_profile = read_json(run_dir / "data_profile.json")
+    except Exception:
+        data_profile = None
+    try:
+        metrics = read_json(run_dir / "metrics.json")
+    except Exception:
+        metrics = None
 
-    lb_campaign = leaderboards.get("campaign") if leaderboards else None
-    lb_adset = leaderboards.get("adset") if leaderboards else None
+    lb_campaign = None
+    lb_adset = None
+    if (run_dir / "leaderboard_campaign.csv").exists():
+        lb_campaign = pd.read_csv(run_dir / "leaderboard_campaign.csv")
+    if (run_dir / "leaderboard_adset.csv").exists():
+        lb_adset = pd.read_csv(run_dir / "leaderboard_adset.csv")
 
-    meta_json = json.dumps(metadata or {}, indent=2, sort_keys=True)
-    profile_json = json.dumps(data_profile or {}, indent=2, sort_keys=True)
-    metrics_json = json.dumps(metrics or {}, indent=2, sort_keys=True)
-    drift_json = json.dumps(drift or {}, indent=2, sort_keys=True)
+    # Plots
+    lift_b64 = None
+    cal_b64 = None
+    model_metrics = (metrics or {}).get("model", {})
+    if model_metrics:
+        lift_b64 = _plot_lift(model_metrics.get("lift_curve", {}) or {})
+        cal_b64 = _plot_calibration(model_metrics.get("calibration", {}) or {})
 
-    html = f"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>ELV Run Report</title>
-  <style>
-    body {{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }}
-    h1, h2 {{ margin: 0.2em 0; }}
-    .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
-    .card {{ border: 1px solid #ddd; border-radius: 10px; padding: 14px; }}
-    pre {{ background: #f7f7f7; padding: 10px; overflow-x: auto; border-radius: 8px; }}
-    table {{ border-collapse: collapse; width: 100%; }}
-    th, td {{ border: 1px solid #ddd; padding: 6px 8px; font-size: 13px; }}
-    th {{ background: #fafafa; text-align: left; }}
-    .muted {{ color: #666; }}
-    img {{ max-width: 100%; height: auto; }}
-  </style>
-</head>
-<body>
-  <h1>ELV Run Report</h1>
-  <p class="muted">Run directory: <code>{run_dir}</code></p>
+    css = """
+    body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; color: #111; }
+    h1 { margin: 0 0 8px; }
+    .subtle { color: #444; margin: 0 0 18px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+    .card { border: 1px solid #e6e6e6; border-radius: 10px; padding: 14px; background: #fff; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #e6e6e6; padding: 6px 8px; font-size: 12px; }
+    th { background: #fafafa; text-align: left; }
+    .warn { background: #fff6e5; border: 1px solid #ffd18a; padding: 10px 12px; border-radius: 10px; }
+    img { max-width: 100%; }
+    """
 
-  <div class="grid">
-    <div class="card">
-      <h2>Leaderboards (Top)</h2>
-      <h3>Campaign</h3>
-      {_df_to_html_table(lb_campaign, max_rows=15)}
-      <h3>Adset</h3>
-      {_df_to_html_table(lb_adset, max_rows=15)}
-    </div>
-    <div class="card">
-      <h2>Diagnostics</h2>
-      <h3>Lift</h3>
-      {f'<img src="data:image/png;base64,{lift_png}"/>' if lift_png else '<p>(no labels available)</p>'}
-      <h3>Calibration</h3>
-      {f'<img src="data:image/png;base64,{cal_png}"/>' if cal_png else '<p>(no calibration data)</p>'}
-    </div>
-  </div>
+    parts: list[str] = []
+    parts.append("<!doctype html><html><head><meta charset='utf-8'/>")
+    parts.append(f"<style>{css}</style></head><body>")
+    parts.append("<h1>Meta Lead Ads ELV Report</h1>")
 
-  <div class="card" style="margin-top:18px;">
-    <h2>Scored Leads (Sample)</h2>
-    {_df_to_html_table(scored, max_rows=20) if scored is not None else "<p>(missing)</p>"}
-  </div>
+    if data_profile:
+        join = (data_profile.get("join") or {})
+        labeling = (data_profile.get("labeling") or {})
+        counts = (labeling.get("counts") or {})
+        parts.append(
+            f"<p class='subtle'>Rows={data_profile.get('rows')} | Join={join.get('strategy')} (match {join.get('match_rate', 0):.1%}) | "
+            f"Labels pos/neg/unk={counts.get('positive', 0)}/{counts.get('negative', 0)}/{counts.get('unknown', 0)} | "
+            f"as_of_date={labeling.get('as_of_date')}</p>"
+        )
+    else:
+        parts.append("<div class='warn'>Missing data_profile.json. Run `elv build-table` or `elv train` first.</div>")
 
-  <div class="grid" style="margin-top:18px;">
-    <div class="card">
-      <h2>Metadata</h2>
-      <pre>{meta_json}</pre>
-    </div>
-    <div class="card">
-      <h2>Data Profile</h2>
-      <pre>{profile_json}</pre>
-    </div>
-  </div>
+    if metrics:
+        m = metrics.get("model", {})
+        base = metrics.get("baseline_campaign_rate", {})
+        parts.append("<div class='grid'>")
+        parts.append("<div class='card'>")
+        parts.append("<h2>Metrics (Test)</h2>")
+        parts.append("<table>")
+        parts.append("<tr><th>Model</th><th>PR-AUC</th><th>Brier</th><th>Lift@k</th><th>Capture@k</th></tr>")
 
-  <div class="grid" style="margin-top:18px;">
-    <div class="card">
-      <h2>Metrics</h2>
-      <pre>{metrics_json}</pre>
-    </div>
-    <div class="card">
-      <h2>Drift (PSI)</h2>
-      <pre>{drift_json}</pre>
-    </div>
-  </div>
+        def fmt(x: Any) -> str:
+            if x is None:
+                return ""
+            if isinstance(x, float):
+                return f"{x:.4f}"
+            return str(x)
 
-</body>
-</html>
-"""
-    out_path = run_dir / "report.html"
-    out_path.write_text(html)
-    return out_path
+        lift = (m.get("lift_at_k") or {})
+        parts.append(
+            "<tr>"
+            f"<td>calibrated {metrics.get('model_type', 'model')}</td>"
+            f"<td>{fmt(m.get('pr_auc'))}</td>"
+            f"<td>{fmt(m.get('brier'))}</td>"
+            f"<td>{fmt(lift.get('lift'))}</td>"
+            f"<td>{fmt(lift.get('capture'))}</td>"
+            "</tr>"
+        )
+        liftb = (base.get("lift_at_k") or {})
+        parts.append(
+            "<tr>"
+            "<td>baseline: campaign rate</td>"
+            f"<td>{fmt(base.get('pr_auc'))}</td>"
+            f"<td>{fmt(base.get('brier'))}</td>"
+            f"<td>{fmt(liftb.get('lift'))}</td>"
+            f"<td>{fmt(liftb.get('capture'))}</td>"
+            "</tr>"
+        )
+        parts.append("</table>")
+        parts.append("</div>")
+
+        parts.append("<div class='card'>")
+        parts.append("<h2>Calibrated ELV</h2>")
+        parts.append("<p class='subtle'>ELV = P(qualified_within_14d) × value_per_qualified</p>")
+        parts.append("<ul>")
+        data = metrics.get("data", {})
+        if data:
+            parts.append(f"<li>n_labeled={data.get('n_labeled')} | positive_rate_labeled={data.get('positive_rate_labeled'):.2%}</li>")
+        split = metrics.get("split", {})
+        if split:
+            parts.append(f"<li>train_end_time={split.get('train_end_time')} | calib_end_time={split.get('calib_end_time')}</li>")
+        parts.append("</ul>")
+        parts.append("</div>")
+        parts.append("</div>")
+    else:
+        parts.append("<div class='warn'>Missing metrics.json. Run `elv train` first.</div>")
+
+    parts.append("<div class='grid'>")
+    parts.append("<div class='card'><h2>Lift</h2>")
+    if lift_b64:
+        parts.append(f"<img alt='lift' src='data:image/png;base64,{lift_b64}'/>")
+    else:
+        parts.append("<p class='subtle'>No lift curve available.</p>")
+    parts.append("</div>")
+    parts.append("<div class='card'><h2>Calibration</h2>")
+    if cal_b64:
+        parts.append(f"<img alt='calibration' src='data:image/png;base64,{cal_b64}'/>")
+    else:
+        parts.append("<p class='subtle'>No calibration data available.</p>")
+    parts.append("</div>")
+    parts.append("</div>")
+
+    if lb_campaign is not None:
+        parts.append("<div class='card'><h2>Campaign Leaderboard</h2>")
+        parts.append(_df_to_html(lb_campaign, max_rows=20))
+        parts.append("</div>")
+    if lb_adset is not None:
+        parts.append("<div class='card'><h2>Adset Leaderboard</h2>")
+        parts.append(_df_to_html(lb_adset, max_rows=20))
+        parts.append("</div>")
+
+    parts.append("</body></html>")
+    out = run_dir / "report.html"
+    out.write_text("\n".join(parts))
+    return out
 

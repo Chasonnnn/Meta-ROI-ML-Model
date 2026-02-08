@@ -7,262 +7,222 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from joblib import dump
-from sklearn.calibration import CalibratedClassifierCV
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from ..config import RunConfig
-from ..drift import compute_psi_for_columns
-from .metrics import EvalMetrics, evaluate_binary
-
-
-def _try_import_lightgbm():
-    try:
-        from lightgbm import LGBMClassifier  # type: ignore
-
-        return LGBMClassifier
-    except Exception:  # pragma: no cover
-        return None
+from .calibration import CalibratedModel, fit_calibrator
+from .metrics import calibration_bins, compute_core_metrics, compute_lift_at_k, lift_curve
+from .split import TimeSplit, time_split
 
 
 @dataclass(frozen=True)
-class TrainResult:
-    model_path: Path
+class TrainArtifacts:
+    model: Any
+    model_bundle: dict[str, Any]
     metrics: dict[str, Any]
-    feature_columns: dict[str, list[str]]
+    split: TimeSplit
+
+
+def _make_ohe() -> OneHotEncoder:
+    try:
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=True)
+    except TypeError:  # pragma: no cover (older sklearn)
+        return OneHotEncoder(handle_unknown="ignore", sparse=True)
 
 
 def _select_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """
+    v1: numeric rolling + time features, plus low-cardinality IDs as categoricals.
+    """
     exclude = {
         "lead_id",
         "created_time",
         "qualified_time",
         "lead_date",
         "feature_end_date",
-        "label_status",
         "label",
-        "campaign_name",
-        "adset_name",
-        "ad_name",
+        "label_status",
+        "p_qualified_14d",
+        "value_per_qualified",
+        "elv",
+        "score_rank",
     }
-    cat_cols: list[str] = []
-    for c in ["campaign_id", "adset_id"]:
-        if c in df.columns and df[c].notna().any():
-            cat_cols.append(c)
 
-    num_cols: list[str] = []
+    # Categorical: prefer campaign/adset IDs; avoid ad_id by default to limit cardinality.
+    categorical = [c for c in ["campaign_id", "adset_id"] if c in df.columns]
+    # Numeric: include all numeric dtypes not excluded.
+    numeric = []
     for c in df.columns:
-        if c in exclude or c in cat_cols:
+        if c in exclude or c in categorical:
             continue
         if pd.api.types.is_numeric_dtype(df[c]):
-            num_cols.append(c)
+            numeric.append(c)
 
-    # Always include lead time features if present
+    # Ensure we include the basic lead time features if present.
     for c in ["lead_dow", "lead_hour"]:
-        if c in df.columns and c not in num_cols:
-            num_cols.append(c)
+        if c in df.columns and c not in numeric:
+            numeric.append(c)
 
-    return sorted(set(num_cols)), cat_cols
-
-
-def _make_preprocessor(num_cols: list[str], cat_cols: list[str]) -> ColumnTransformer:
-    numeric = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-        ]
-    )
-    categorical = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="constant", fill_value="__MISSING__")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore")),
-        ]
-    )
-    return ColumnTransformer(
-        transformers=[
-            ("num", numeric, num_cols),
-            ("cat", categorical, cat_cols),
-        ],
-        remainder="drop",
-        sparse_threshold=0.3,
-    )
+    return numeric, categorical
 
 
-def _make_estimator(cfg: RunConfig, num_cols: list[str], cat_cols: list[str]):
-    pre = _make_preprocessor(num_cols, cat_cols)
-    model_type = cfg.model.model_type.lower()
-    if model_type == "logreg":
-        params = {"class_weight": "balanced", "solver": "lbfgs"}
+def _build_preprocessor(numeric_cols: list[str], categorical_cols: list[str], scale_numeric: bool) -> ColumnTransformer:
+    num_steps: list[tuple[str, Any]] = [("imputer", SimpleImputer(strategy="median"))]
+    if scale_numeric:
+        num_steps.append(("scaler", StandardScaler()))
+    num_pipe = Pipeline(num_steps)
+
+    transformers: list[tuple[str, Any, list[str]]] = []
+    if numeric_cols:
+        transformers.append(("num", num_pipe, numeric_cols))
+    if categorical_cols:
+        transformers.append(("cat", _make_ohe(), categorical_cols))
+    if not transformers:
+        raise ValueError("No features found to train on.")
+
+    return ColumnTransformer(transformers, remainder="drop")
+
+
+def _build_estimator(cfg: RunConfig) -> Any:
+    mt = cfg.model.model_type.lower().strip()
+    if mt == "logreg":
+        params = {"C": 1.0, "max_iter": 2000}
         params.update(cfg.model.logreg_params or {})
-        est = LogisticRegression(random_state=cfg.model.random_seed, **params)
-        return Pipeline([("pre", pre), ("est", est)])
-
-    if model_type == "lgbm":
-        LGBMClassifier = _try_import_lightgbm()
-        if LGBMClassifier is None:
+        return LogisticRegression(
+            C=float(params.get("C", 1.0)),
+            max_iter=int(params.get("max_iter", 2000)),
+            solver="saga",
+        )
+    if mt == "lgbm":
+        try:
+            import lightgbm as lgb  # type: ignore
+        except Exception as e:  # pragma: no cover
             raise RuntimeError(
-                "lightgbm is not installed. Install with: uv sync --extra lgbm (or pip install lightgbm)."
-            )
+                "Failed to import LightGBM. Install with: uv sync --extra lgbm. "
+                "On macOS you may also need OpenMP (e.g., `brew install libomp`)."
+            ) from e
         params = dict(cfg.model.lgbm_params or {})
-        params.setdefault("random_state", cfg.model.random_seed)
+        params.setdefault("random_state", int(cfg.model.random_seed))
         params.setdefault("n_estimators", 400)
         params.setdefault("learning_rate", 0.05)
-        est = LGBMClassifier(**params)
-        return Pipeline([("pre", pre), ("est", est)])
-
+        params.setdefault("num_leaves", 31)
+        params.setdefault("min_child_samples", 50)
+        params.setdefault("subsample", 0.9)
+        params.setdefault("colsample_bytree", 0.9)
+        params.setdefault("reg_lambda", 1.0)
+        return lgb.LGBMClassifier(**params)
     raise ValueError(f"Unknown model_type: {cfg.model.model_type}")
 
 
-def _time_split(df: pd.DataFrame, cfg: RunConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    df2 = df.sort_values("created_time").reset_index(drop=True)
-    n = len(df2)
-    n_train = int(round(n * cfg.splits.train_frac))
-    n_calib = int(round(n * cfg.splits.calib_frac))
-    n_train = max(1, min(n_train, n - 2))
-    n_calib = max(1, min(n_calib, n - n_train - 1))
-    n_test = n - n_train - n_calib
-    if n_test <= 0:
-        n_test = 1
-        n_calib = max(1, n - n_train - n_test)
-    train = df2.iloc[:n_train].copy()
-    calib = df2.iloc[n_train : n_train + n_calib].copy()
-    test = df2.iloc[n_train + n_calib :].copy()
-    return train, calib, test
+def _campaign_rate_baseline(train_df: pd.DataFrame) -> dict[str, float]:
+    if "campaign_id" not in train_df.columns:
+        return {}
+    d = train_df.dropna(subset=["campaign_id", "label"])
+    if not len(d):
+        return {}
+    rates = d.groupby("campaign_id")["label"].mean().to_dict()
+    return {str(k): float(v) for k, v in rates.items()}
 
 
-def train_model(cfg: RunConfig, table: pd.DataFrame, run_dir: Path) -> TrainResult:
-    # Filter to supervised rows (matured labels)
-    if cfg.label.require_label_maturity:
-        sup = table[table["label_status"].isin(["positive", "negative"])].copy()
-    else:
-        sup = table[table["label"].notna()].copy()
+def _apply_campaign_rate_baseline(df: pd.DataFrame, rates: dict[str, float], default: float) -> np.ndarray:
+    if "campaign_id" not in df.columns or not rates:
+        return np.full(len(df), default, dtype=float)
+    cid = df["campaign_id"].astype("object").astype(str)
+    out = cid.map(rates).fillna(default).to_numpy(dtype=float)
+    return out
 
-    if len(sup) < 100:
-        raise RuntimeError(f"Not enough labeled rows to train (have {len(sup)}).")
 
-    num_cols, cat_cols = _select_feature_columns(sup)
-    X_cols = num_cols + cat_cols
-    y = sup["label"].astype(int).to_numpy()
+def train_and_evaluate(cfg: RunConfig, table: pd.DataFrame, *, max_labeled_rows: int | None = None) -> TrainArtifacts:
+    if "label" not in table.columns:
+        raise ValueError("Table must include 'label' for training.")
 
-    train_df, calib_df, test_df = _time_split(sup, cfg)
+    # Train/eval uses only labeled rows (unknowns excluded).
+    labeled = table[table["label"].notna()].copy()
+    if len(labeled) < 50:
+        raise ValueError("Not enough labeled rows to train (need at least 50).")
 
-    X_train = train_df[X_cols]
+    labeled["created_time"] = pd.to_datetime(labeled["created_time"], utc=True, errors="coerce")
+    labeled = labeled.dropna(subset=["created_time"])
+
+    # Optional cap for interactive environments (e.g., Hugging Face Spaces).
+    if isinstance(max_labeled_rows, int) and max_labeled_rows > 0 and len(labeled) > max_labeled_rows:
+        labeled = labeled.sort_values("created_time").iloc[-max_labeled_rows:].copy()
+
+    split = time_split(
+        labeled,
+        time_col="created_time",
+        train_frac=cfg.splits.train_frac,
+        calib_frac=cfg.splits.calib_frac,
+        test_frac=cfg.splits.test_frac,
+    )
+
+    train_df = labeled.loc[split.train_idx]
+    calib_df = labeled.loc[split.calib_idx]
+    test_df = labeled.loc[split.test_idx]
+
     y_train = train_df["label"].astype(int).to_numpy()
-    X_calib = calib_df[X_cols]
     y_calib = calib_df["label"].astype(int).to_numpy()
-    X_test = test_df[X_cols]
     y_test = test_df["label"].astype(int).to_numpy()
 
-    method = cfg.model.calibration_method.lower()
-    if method not in {"sigmoid", "isotonic"}:
-        raise ValueError("calibration_method must be sigmoid or isotonic")
+    numeric_cols, categorical_cols = _select_feature_columns(labeled)
 
-    # --- Baseline: calibrated logistic regression ---
-    logreg_cfg = RunConfig(
-        schema_version=cfg.schema_version,
-        paths=cfg.paths,
-        label=cfg.label,
-        features=cfg.features,
-        business=cfg.business,
-        splits=cfg.splits,
-        model=cfg.model.__class__(
-            model_type="logreg",
-            calibration_method=cfg.model.calibration_method,
-            random_seed=cfg.model.random_seed,
-            lgbm_params=cfg.model.lgbm_params,
-            logreg_params=cfg.model.logreg_params,
-        ),
-        reporting=cfg.reporting,
-    )
-    logreg_est = _make_estimator(logreg_cfg, num_cols=num_cols, cat_cols=cat_cols)
-    logreg_est.fit(X_train, y_train)
-    logreg_cal = CalibratedClassifierCV(logreg_est, method=method, cv="prefit")
-    logreg_cal.fit(X_calib, y_calib)
-    logreg_prob = logreg_cal.predict_proba(X_test)[:, 1]
-    logreg_em: EvalMetrics = evaluate_binary(
-        y_true=y_test, y_prob=logreg_prob, topk_frac=cfg.reporting.topk_frac, ece_bins=cfg.reporting.ece_bins
-    )
+    # Preprocess: scale numeric for logreg, not necessary for lgbm but fine; keep simple.
+    scale_numeric = True
+    pre = _build_preprocessor(numeric_cols, categorical_cols, scale_numeric=scale_numeric)
+    est = _build_estimator(cfg)
+    base_model = Pipeline([("pre", pre), ("est", est)])
 
-    # --- Baseline: campaign historical qualification rate ---
-    campaign_baseline = None
-    if "campaign_id" in train_df.columns and train_df["campaign_id"].notna().any():
-        rates = train_df.groupby("campaign_id")["label"].mean()
-        global_rate = float(train_df["label"].mean())
-        pred = test_df["campaign_id"].map(rates).fillna(global_rate).to_numpy(dtype=float)
-        campaign_baseline = evaluate_binary(
-            y_true=y_test, y_prob=pred, topk_frac=cfg.reporting.topk_frac, ece_bins=cfg.reporting.ece_bins
-        )
+    X_train = train_df[numeric_cols + categorical_cols]
+    X_calib = calib_df[numeric_cols + categorical_cols]
+    X_test = test_df[numeric_cols + categorical_cols]
 
-    # --- Main model (configured) ---
-    base = _make_estimator(cfg, num_cols=num_cols, cat_cols=cat_cols)
-    base.fit(X_train, y_train)
-    calibrated = CalibratedClassifierCV(base, method=method, cv="prefit")
-    calibrated.fit(X_calib, y_calib)
+    base_model.fit(X_train, y_train)
+    p_calib_raw = base_model.predict_proba(X_calib)[:, 1]
+    calibrator = fit_calibrator(cfg.model.calibration_method, p_calib_raw, y_calib)
+    model = CalibratedModel(base_model=base_model, calibrator=calibrator)
 
-    prob_test = calibrated.predict_proba(X_test)[:, 1]
-    em: EvalMetrics = evaluate_binary(
-        y_true=y_test, y_prob=prob_test, topk_frac=cfg.reporting.topk_frac, ece_bins=cfg.reporting.ece_bins
-    )
+    p_test = model.predict_proba(X_test)[:, 1]
 
-    metrics: dict[str, Any] = {
-        "n_labeled": int(len(sup)),
+    # Metrics (model)
+    metrics: dict[str, Any] = {}
+    metrics["model"] = compute_core_metrics(y_test, p_test)
+    lift = compute_lift_at_k(y_test, p_test, cfg.reporting.topk_frac)
+    metrics["model"]["lift_at_k"] = lift.__dict__
+    metrics["model"]["lift_curve"] = lift_curve(y_test, p_test, points=50)
+    metrics["model"]["calibration"] = calibration_bins(y_test, p_test, bins=cfg.reporting.ece_bins)
+
+    # Baseline: campaign historical qualification rate (train window)
+    default_rate = float(y_train.mean()) if len(y_train) else 0.0
+    rates = _campaign_rate_baseline(train_df)
+    p_base = _apply_campaign_rate_baseline(test_df, rates, default=default_rate)
+    metrics["baseline_campaign_rate"] = compute_core_metrics(y_test, p_base)
+    lift_b = compute_lift_at_k(y_test, p_base, cfg.reporting.topk_frac)
+    metrics["baseline_campaign_rate"]["lift_at_k"] = lift_b.__dict__
+
+    # Bundle
+    bundle = {
+        "model": model,
+        "feature_columns": {"numeric": numeric_cols, "categorical": categorical_cols},
+        "calibration_method": cfg.model.calibration_method,
+        "model_type": cfg.model.model_type,
+    }
+
+    metrics["data"] = {
+        "n_labeled": int(len(labeled)),
         "n_train": int(len(train_df)),
         "n_calib": int(len(calib_df)),
         "n_test": int(len(test_df)),
-        "positive_rate_train": float(y_train.mean()),
-        "eval_test": {
-            "pr_auc": em.pr_auc,
-            "brier": em.brier,
-            "roc_auc": em.roc_auc,
-            "lift": em.lift,
-            "ece": em.ece,
-            "calibration": em.calibration,
-        },
-        "baselines": {
-            "logreg_calibrated": {
-                "pr_auc": logreg_em.pr_auc,
-                "brier": logreg_em.brier,
-                "roc_auc": logreg_em.roc_auc,
-                "lift": logreg_em.lift,
-                "ece": logreg_em.ece,
-                "calibration": logreg_em.calibration,
-            },
-            "campaign_rate": (
-                None
-                if campaign_baseline is None
-                else {
-                    "pr_auc": campaign_baseline.pr_auc,
-                    "brier": campaign_baseline.brier,
-                    "roc_auc": campaign_baseline.roc_auc,
-                    "lift": campaign_baseline.lift,
-                    "ece": campaign_baseline.ece,
-                    "calibration": campaign_baseline.calibration,
-                }
-            ),
-        },
-        "features": {"numeric": num_cols, "categorical": cat_cols},
-        "model": {"type": cfg.model.model_type, "calibration": method},
-        "splits": {
-            "train_frac": cfg.splits.train_frac,
-            "calib_frac": cfg.splits.calib_frac,
-            "test_frac": cfg.splits.test_frac,
-            "train_end_created_time": str(train_df["created_time"].max()),
-            "calib_end_created_time": str(calib_df["created_time"].max()),
-            "test_end_created_time": str(test_df["created_time"].max()),
-        },
+        "positive_rate_labeled": float(labeled["label"].mean()),
     }
+    metrics["split"] = {"train_end_time": split.train_end_time, "calib_end_time": split.calib_end_time}
 
-    # Minimal drift: PSI for up to 10 numeric features between train and test.
-    drift_cols = [c for c in num_cols if c in train_df.columns][:10]
-    metrics["drift_psi"] = compute_psi_for_columns(
-        expected_df=train_df, actual_df=test_df, cols=drift_cols, bins=10
-    )
+    return TrainArtifacts(model=model, model_bundle=bundle, metrics=metrics, split=split)
 
-    model_path = run_dir / "model.joblib"
-    dump(
-        {"model": calibrated, "feature_columns": {"numeric": num_cols, "categorical": cat_cols}},
-        model_path,
-    )
-    return TrainResult(model_path=model_path, metrics=metrics, feature_columns={"numeric": num_cols, "categorical": cat_cols})
+
+def save_model_bundle(path: Path, bundle: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    dump(bundle, path)
