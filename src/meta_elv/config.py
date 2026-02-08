@@ -54,6 +54,7 @@ class ModelConfig:
 class ReportingConfig:
     topk_frac: float
     ece_bins: int
+    min_segment_leads: int
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,11 @@ def config_to_dict(cfg: RunConfig) -> dict[str, Any]:
             "lgbm_params": cfg.model.lgbm_params,
             "logreg_params": cfg.model.logreg_params,
         },
-        "reporting": {"topk_frac": cfg.reporting.topk_frac, "ece_bins": cfg.reporting.ece_bins},
+        "reporting": {
+            "topk_frac": cfg.reporting.topk_frac,
+            "ece_bins": cfg.reporting.ece_bins,
+            "min_segment_leads": cfg.reporting.min_segment_leads,
+        },
     }
 
 
@@ -169,6 +174,7 @@ def load_config(path: str | Path) -> RunConfig:
         reporting=ReportingConfig(
             topk_frac=float(reporting_raw.get("topk_frac", 0.10)),
             ece_bins=int(reporting_raw.get("ece_bins", 10)),
+            min_segment_leads=int(reporting_raw.get("min_segment_leads", 30)),
         ),
     )
 

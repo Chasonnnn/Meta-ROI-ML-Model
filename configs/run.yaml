@@ -45,3 +45,4 @@ model:
 reporting:
   topk_frac: 0.10
   ece_bins: 10
+  min_segment_leads: 30
