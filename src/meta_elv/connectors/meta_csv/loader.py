@@ -38,6 +38,19 @@ def _normalize_columns(df: pd.DataFrame, mapping: dict[str, list[str]]) -> tuple
 def _read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
+def _drop_non_canonical(df: pd.DataFrame, keep: list[str]) -> tuple[pd.DataFrame, list[str]]:
+    warnings: list[str] = []
+    keep_existing = [c for c in keep if c in df.columns]
+    keep_set = set(keep_existing)
+    extra = [c for c in df.columns if c not in keep_set]
+    if extra:
+        # Avoid leaking any potential PII fields downstream by default.
+        warnings.append(f"Dropped non-canonical columns: {extra}")
+        df = df[keep_existing].copy()
+    else:
+        df = df[keep_existing].copy()
+    return df, warnings
+
 
 def load_ads(path: Path) -> LoadResult:
     df = _read_csv(path)
@@ -61,6 +74,22 @@ def load_ads(path: Path) -> LoadResult:
     for col in ["impressions", "clicks", "spend"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+    df, dropped_warnings = _drop_non_canonical(
+        df,
+        [
+            "date",
+            "campaign_id",
+            "campaign_name",
+            "adset_id",
+            "adset_name",
+            "ad_id",
+            "ad_name",
+            "impressions",
+            "clicks",
+            "spend",
+        ],
+    )
+    warnings.extend(dropped_warnings)
     return LoadResult(df=df, warnings=warnings)
 
 
@@ -79,6 +108,23 @@ def load_leads(path: Path) -> LoadResult:
     df, warnings = _normalize_columns(df, mapping)
     if "created_time" in df.columns:
         df["created_time"] = pd.to_datetime(df["created_time"], errors="coerce", utc=True)
+    # Keep only canonical columns by default (avoid accidental PII propagation).
+    keep = [
+        c
+        for c in [
+            "lead_id",
+            "created_time",
+            "campaign_id",
+            "campaign_name",
+            "adset_id",
+            "adset_name",
+            "ad_id",
+            "ad_name",
+        ]
+        if c in df.columns
+    ]
+    df, dropped_warnings = _drop_non_canonical(df, keep)
+    warnings.extend(dropped_warnings)
     return LoadResult(df=df, warnings=warnings)
 
 
@@ -98,6 +144,9 @@ def load_outcomes(path: Path) -> LoadResult:
     df, warnings = _normalize_columns(df, mapping)
     if "qualified_time" in df.columns:
         df["qualified_time"] = pd.to_datetime(df["qualified_time"], errors="coerce", utc=True)
+    keep = [c for c in ["lead_id", "qualified_time"] if c in df.columns]
+    df, dropped_warnings = _drop_non_canonical(df, keep)
+    warnings.extend(dropped_warnings)
     return LoadResult(df=df, warnings=warnings)
 
 
@@ -110,5 +159,7 @@ def load_lead_to_ad_map(path: Path) -> LoadResult:
         "campaign_id": ["campaign_id", "campaign id", "Campaign ID"],
     }
     df, warnings = _normalize_columns(df, mapping)
+    keep = [c for c in ["lead_id", "ad_id", "adset_id", "campaign_id"] if c in df.columns]
+    df, dropped_warnings = _drop_non_canonical(df, keep)
+    warnings.extend(dropped_warnings)
     return LoadResult(df=df, warnings=warnings)
-
