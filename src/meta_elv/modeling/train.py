@@ -14,6 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from ..config import RunConfig
+from ..drift import compute_psi_for_columns
 from .calibration import CalibratedModel, fit_calibrator
 from .metrics import calibration_bins, compute_core_metrics, compute_lift_at_k, lift_curve
 from .split import TimeSplit, time_split
@@ -68,6 +69,34 @@ def _select_feature_columns(df: pd.DataFrame) -> tuple[list[str], list[str]]:
             numeric.append(c)
 
     return numeric, categorical
+
+
+def _select_drift_columns(cfg: RunConfig, numeric_cols: list[str]) -> list[str]:
+    """
+    Minimal drift check: PSI between train and test splits for a small, stable set of numeric features.
+    """
+    w = int(cfg.features.feature_window_days)
+    preferred = [
+        f"spend_sum_{w}d",
+        f"clicks_sum_{w}d",
+        f"impressions_sum_{w}d",
+        f"ctr_{w}d",
+        f"cpc_{w}d",
+        f"cpm_{w}d",
+        f"active_days_{w}d",
+        "spend_trend_ratio_2vprev",
+        "clicks_trend_ratio_2vprev",
+        "lead_hour",
+        "lead_dow",
+    ]
+    cols = [c for c in preferred if c in numeric_cols]
+    if len(cols) < 5:
+        for c in numeric_cols:
+            if c not in cols:
+                cols.append(c)
+            if len(cols) >= 10:
+                break
+    return cols[:10]
 
 
 def _build_preprocessor(numeric_cols: list[str], categorical_cols: list[str], scale_numeric: bool) -> ColumnTransformer:
@@ -168,6 +197,12 @@ def train_and_evaluate(cfg: RunConfig, table: pd.DataFrame, *, max_labeled_rows:
     y_calib = calib_df["label"].astype(int).to_numpy()
     y_test = test_df["label"].astype(int).to_numpy()
 
+    if len(np.unique(y_train)) < 2:
+        only = int(np.unique(y_train)[0]) if len(y_train) else None
+        raise ValueError(
+            f"Training split must contain both positive and negative labels; found only label={only}."
+        )
+
     numeric_cols, categorical_cols = _select_feature_columns(labeled)
 
     # Preprocess: scale numeric for logreg, not necessary for lgbm but fine; keep simple.
@@ -189,6 +224,8 @@ def train_and_evaluate(cfg: RunConfig, table: pd.DataFrame, *, max_labeled_rows:
 
     # Metrics (model)
     metrics: dict[str, Any] = {}
+    metrics["model_type"] = cfg.model.model_type
+    metrics["calibration_method"] = cfg.model.calibration_method
     metrics["model"] = compute_core_metrics(y_test, p_test)
     lift = compute_lift_at_k(y_test, p_test, cfg.reporting.topk_frac)
     metrics["model"]["lift_at_k"] = lift.__dict__
@@ -219,6 +256,22 @@ def train_and_evaluate(cfg: RunConfig, table: pd.DataFrame, *, max_labeled_rows:
         "positive_rate_labeled": float(labeled["label"].mean()),
     }
     metrics["split"] = {"train_end_time": split.train_end_time, "calib_end_time": split.calib_end_time}
+
+    # Minimal drift check: PSI of selected numeric features between train and test splits.
+    psi_cols = _select_drift_columns(cfg, numeric_cols)
+    psi = compute_psi_for_columns(train_df, test_df, cols=psi_cols, bins=10)
+    threshold = 0.2
+    flagged = [
+        c
+        for c, r in (psi.get("columns") or {}).items()
+        if (r or {}).get("psi") is not None and float(r["psi"]) >= threshold
+    ]
+    metrics["drift"] = {
+        "psi_train_vs_test": psi,
+        "psi_threshold": threshold,
+        "flagged_columns": flagged,
+        "n_flagged": int(len(flagged)),
+    }
 
     return TrainArtifacts(model=model, model_bundle=bundle, metrics=metrics, split=split)
 
