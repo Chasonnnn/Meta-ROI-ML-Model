@@ -64,6 +64,19 @@ elv train --config configs/run.yaml
 elv score --config configs/run.yaml --model runs/<run_id>/model.joblib
 ```
 
+### Batch Scoring (New Leads)
+For daily scoring of new leads (typically no outcomes yet):
+
+```bash
+elv batch-score --config configs/run.yaml --model runs/<run_id>/model.joblib --leads-path data/new_leads.csv
+```
+
+This forces `outcomes_path=null` for the run so the pipeline does not fabricate labels.
+
+### Inference-Only Scoring (No outcomes.csv)
+For batch scoring of new leads, set `paths.outcomes_path: null` in your config and run `elv score`.
+The pipeline will keep all rows `label_status=unknown` (it will not fabricate negatives).
+
 ## What Makes This "Ads ML Realistic"
 - **Label maturity**: Leads newer than `label_window_days` are labeled `unknown` and excluded from supervised train/eval.
 - **Daily ads.csv leakage guard**: With daily aggregates, same-day metrics can include post-lead activity. Default `feature_lag_days=1` uses metrics only through `lead_date - 1 day`.
@@ -86,6 +99,16 @@ Each run writes to `runs/<run_id>/`:
 - `model.joblib`
 - `predictions.csv`
 - `leaderboard_campaign.csv`, `leaderboard_adset.csv` (when keys exist)
+- `drift.json` (score-only runs, when the model bundle contains a drift reference)
+
+## Drift (PSI)
+- Train runs compute PSI between train vs test for a small set of numeric features and include it in `metrics.json` and `report.html`.
+- Score-only runs compute PSI of scoring data vs the training reference stored in the model bundle and write `drift.json` (also shown in `report.html`).
+
+## Leaderboard Guardrails
+Leaderboards include:
+- `lead_count` and `low_volume` (defaults to `reporting.min_segment_leads: 30`)
+Interpret low-volume segments cautiously.
 
 ## UI (Streamlit / Hugging Face Spaces)
 Local:
@@ -98,3 +121,10 @@ The public demo is intended to be **score-first** with synthetic demo data and a
 
 ## Safety / Privacy
 Do not commit or upload real client exports to the repo. This project is designed to be demoable using synthetic data only.
+
+## Docs
+- `docs/QUICKSTART.md`
+- `docs/BYO_CSVS.md`
+- `docs/BATCH_SCORING.md`
+- `docs/CALIBRATION_AND_ELV.md`
+- `docs/CONNECTORS.md`

@@ -9,7 +9,7 @@ This project is designed to read like a small **ML platform**: CSV contracts, se
 - Week 3: Mostly done (time split, calibration, metrics, baseline campaign-rate, report). LightGBM is optional and may require system OpenMP on macOS.
 - Week 4: Done (ELV outputs, leaderboards with min-volume guardrails, run metadata, model/data cards)
 - Week 5: Done (Streamlit score-first demo + bundled synthetic demo model)
-- Week 6: Partial (CI exists; drift PSI added to training report; batch scoring + expanded docs still TODO)
+- Week 6: Mostly done (CI exists; drift PSI added to training + score runs; batch scoring added; starter docs added under docs/)
 
 ## Week 1 — Scaffolding + Contracts + Demo Data
 
