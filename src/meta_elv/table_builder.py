@@ -275,7 +275,7 @@ def build_table(cfg: RunConfig) -> BuildTableResult:
     leads["lead_dow"] = leads["created_time"].dt.weekday.astype("int8")
 
     # Features are computed at the most granular available key per lead.
-    # We compute features at each level and join as available.
+    # Because ads.csv is daily aggregates, we default to lagging features by 1 day.
     feature_window = int(cfg.features.feature_window_days)
     lag = int(cfg.features.feature_lag_days)
     leads["feature_end_date"] = (
@@ -292,30 +292,66 @@ def build_table(cfg: RunConfig) -> BuildTableResult:
         if level_key in ads.columns:
             feature_tables[level_key] = _compute_rolling_features(ads, level_key, feature_window)
 
-    # Join features by available key, preferring the most granular key
-    feat_cols: list[str] = []
-
-    def join_level(key: str) -> pd.DataFrame:
+    def merge_features(df: pd.DataFrame, key: str, prefix: str) -> pd.DataFrame:
         ft = feature_tables.get(key)
-        if ft is None or key not in leads.columns:
-            return leads
-        merged = leads.merge(
-            ft,
+        if ft is None or key not in df.columns:
+            return df
+        ft2 = ft.copy()
+        rename = {c: f"{prefix}{c}" for c in ft2.columns if c not in {key, "date"}}
+        ft2 = ft2.rename(columns=rename)
+        merged = df.merge(
+            ft2,
             left_on=[key, "feature_end_date"],
             right_on=[key, "date"],
             how="left",
-            suffixes=("", f"_{key}"),
         )
         return merged.drop(columns=["date"])
 
-    if _has_any_non_null(leads, "ad_id"):
-        leads = join_level("ad_id")
-    elif _has_any_non_null(leads, "adset_id"):
-        leads = join_level("adset_id")
-    elif _has_any_non_null(leads, "campaign_id"):
-        leads = join_level("campaign_id")
+    # Merge all levels then coalesce per-row: ad -> adset -> campaign.
+    leads = merge_features(leads, "campaign_id", "campaign_")
+    leads = merge_features(leads, "adset_id", "adset_")
+    leads = merge_features(leads, "ad_id", "ad_")
+
+    # Determine base feature names from any available feature table
+    base_feature_names: list[str] = []
+    for ft in feature_tables.values():
+        base_feature_names = [c for c in ft.columns if c not in {"date", "ad_id", "adset_id", "campaign_id"}]
+        if base_feature_names:
+            break
+
+    if not base_feature_names:
+        warnings.append("No ads-derived feature tables could be computed; ads-derived features will be missing.")
     else:
-        warnings.append("No join keys available; ads-derived features will be missing.")
+        for f in base_feature_names:
+            ad_c = f"ad_{f}"
+            adset_c = f"adset_{f}"
+            camp_c = f"campaign_{f}"
+            s = None
+            if ad_c in leads.columns:
+                s = leads[ad_c]
+            if s is None:
+                s = pd.Series([np.nan] * len(leads), index=leads.index)
+            if adset_c in leads.columns:
+                s = s.fillna(leads[adset_c])
+            if camp_c in leads.columns:
+                s = s.fillna(leads[camp_c])
+            leads[f] = s
+
+        # Drop intermediate prefixed columns to keep the table compact
+        protected = {
+            "ad_id",
+            "ad_name",
+            "adset_id",
+            "adset_name",
+            "campaign_id",
+            "campaign_name",
+        }
+        drop_cols = [
+            c
+            for c in leads.columns
+            if c.startswith(("ad_", "adset_", "campaign_")) and c not in protected
+        ]
+        leads = leads.drop(columns=drop_cols)
 
     # Determine feature columns (exclude ids/timestamps/labels)
     non_feature = {
@@ -326,8 +362,14 @@ def build_table(cfg: RunConfig) -> BuildTableResult:
         "feature_end_date",
         "label",
         "label_status",
+        "campaign_id",
+        "campaign_name",
+        "adset_id",
+        "adset_name",
+        "ad_id",
+        "ad_name",
     }
-    feat_cols = [c for c in leads.columns if c not in non_feature and not c.endswith("_name_from_ads")]
+    feat_cols = [c for c in leads.columns if c not in non_feature]
 
     details["features"] = {
         "feature_window_days": feature_window,
