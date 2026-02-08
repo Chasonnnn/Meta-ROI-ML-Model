@@ -34,12 +34,14 @@ ui = [
 ]
 
 [project.scripts]
-elv = "meta_elv.cli:app"
+elv = "meta_elv.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+meta_elv = ["assets/*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-
