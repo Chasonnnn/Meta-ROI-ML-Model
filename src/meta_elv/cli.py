@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +22,7 @@ from .config import (
 )
 from .demo.generate import DemoDataSpec, generate_demo_data
 from .pipeline import run_build_table, run_score, run_train
-from .run_artifacts import create_run_context, snapshot_config
+from .run_artifacts import RunContext, create_run_context, snapshot_config
 from .utils import ensure_dir
 from .validate import render_validation_summary, validate_from_config
 
@@ -42,11 +44,14 @@ def _die(msg: str, code: int = 1) -> None:
 @app.command()
 def validate(config: Path = typer.Option(..., "--config", exists=True, dir_okay=False)):
     """Validate input CSVs against the v1 schema and print a friendly summary."""
-    cfg = load_config(config)
-    result = validate_from_config(cfg)
-    console.print(render_validation_summary(result))
-    if not result.ok:
-        raise typer.Exit(code=1)
+    try:
+        cfg = load_config(config)
+        result = validate_from_config(cfg)
+        console.print(render_validation_summary(result))
+        if not result.ok:
+            raise typer.Exit(code=1)
+    except Exception as e:
+        _die(str(e))
 
 
 @app.command("build-table")
@@ -96,6 +101,60 @@ def score(
         out = run_score(cfg, ctx, model_path=model)
         console.print(f"[green]Wrote run:[/green] {ctx.run_dir}")
         console.print(f"Predictions: {ctx.run_dir / 'predictions.csv'}")
+        console.print(f"Report: {out['report_path']}")
+    except Exception as e:
+        _die(str(e))
+
+
+@app.command("batch-score")
+def batch_score_cmd(
+    config: Path = typer.Option(..., "--config", exists=True, dir_okay=False),
+    model: Path = typer.Option(..., "--model", exists=True, dir_okay=False),
+    leads_path: Optional[Path] = typer.Option(
+        None, "--leads-path", help="Override leads.csv path (useful for daily batch scoring)."
+    ),
+    out_dir: Optional[Path] = typer.Option(
+        None, "--out-dir", help="Write outputs to this directory instead of runs/<run_id>/."
+    ),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Allow writing into an existing --out-dir."),
+):
+    """
+    Batch scoring mode for new leads (inference-only).
+
+    - Forces outcomes_path = null (no labels).
+    - Writes the same artifacts as `elv score` (predictions, leaderboards, drift, report).
+    """
+    try:
+        cfg = load_config(config)
+        effective = replace(
+            cfg,
+            paths=replace(
+                cfg.paths,
+                leads_path=leads_path if leads_path is not None else cfg.paths.leads_path,
+                outcomes_path=None,  # inference-only: do not label
+            ),
+        )
+
+        if out_dir is None:
+            ctx = create_run_context(_repo_root())
+        else:
+            rd = Path(out_dir).resolve()
+            if rd.exists():
+                if any(rd.iterdir()) and not overwrite:
+                    _die(f"--out-dir exists and is not empty: {rd} (pass --overwrite to proceed)")
+            else:
+                rd.mkdir(parents=True, exist_ok=True)
+            ctx = RunContext(repo_root=_repo_root().resolve(), run_dir=rd, run_id=rd.name)
+
+        # Keep both the input config and the effective config used for the run.
+        shutil.copyfile(config, ctx.run_dir / "config.input.yaml")
+        save_config(effective, ctx.run_dir / "config.yaml")
+
+        out = run_score(effective, ctx, model_path=model)
+        console.print(f"[green]Wrote run:[/green] {ctx.run_dir}")
+        console.print(f"Predictions: {ctx.run_dir / 'predictions.csv'}")
+        if (ctx.run_dir / "drift.json").exists():
+            console.print(f"Drift: {ctx.run_dir / 'drift.json'}")
         console.print(f"Report: {out['report_path']}")
     except Exception as e:
         _die(str(e))
