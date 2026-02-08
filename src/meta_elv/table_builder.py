@@ -216,9 +216,11 @@ def build_table(cfg: RunConfig) -> BuildTableResult:
         "rows": int(len(leads)),
     }
 
-    # Outcomes / labels (optional)
-    outcomes = None
-    if cfg.paths.outcomes_path is not None and Path(cfg.paths.outcomes_path).exists():
+    # Outcomes / labels (optional for scoring; required for supervised training)
+    outcomes_available = bool(
+        cfg.paths.outcomes_path is not None and Path(cfg.paths.outcomes_path).exists()
+    )
+    if outcomes_available:
         out_lr = meta_csv.load_outcomes(Path(cfg.paths.outcomes_path))
         warnings.extend(out_lr.warnings)
         outcomes = out_lr.df
@@ -226,6 +228,7 @@ def build_table(cfg: RunConfig) -> BuildTableResult:
         outcomes = outcomes.drop_duplicates(subset=["lead_id"])
         leads = leads.merge(outcomes[["lead_id", "qualified_time"]], on="lead_id", how="left")
     else:
+        # Inference-only mode: do not fabricate negative labels.
         leads["qualified_time"] = pd.NaT
 
     # as_of_date
@@ -242,32 +245,54 @@ def build_table(cfg: RunConfig) -> BuildTableResult:
         days=label_window
     )
 
-    created = leads["created_time"]
-    qualified_time = pd.to_datetime(leads["qualified_time"], errors="coerce", utc=True)
+    if not outcomes_available:
+        # Without outcomes we cannot label; keep everything unknown.
+        leads["label"] = np.nan
+        leads["label_status"] = "unknown"
+        label_summary = {
+            "positive": 0,
+            "negative": 0,
+            "unknown": int(len(leads)),
+        }
+        details["labeling"] = {
+            "as_of_date": as_of.isoformat(),
+            "label_window_days": label_window,
+            "require_label_maturity": bool(cfg.label.require_label_maturity),
+            "maturity_cutoff_utc": maturity_cutoff.isoformat(),
+            "outcomes_available": False,
+            "counts": label_summary,
+        }
+    else:
+        created = leads["created_time"]
+        qualified_time = pd.to_datetime(leads["qualified_time"], errors="coerce", utc=True)
 
-    is_positive = qualified_time.notna() & (qualified_time <= created + pd.to_timedelta(label_window, unit="D"))
-    is_mature = created <= maturity_cutoff
-    is_negative = qualified_time.isna() & is_mature
-    is_unknown = ~is_mature
+        is_positive = qualified_time.notna() & (qualified_time <= created + pd.to_timedelta(label_window, unit="D"))
+        if cfg.label.require_label_maturity:
+            is_mature = created <= maturity_cutoff
+        else:
+            is_mature = pd.Series([True] * len(leads), index=leads.index)
+        is_negative = qualified_time.isna() & is_mature
+        is_unknown = ~is_mature
 
-    leads["label"] = np.where(is_positive, 1, np.where(is_negative, 0, np.nan))
-    leads["label_status"] = np.where(
-        is_positive, "positive", np.where(is_negative, "negative", "unknown")
-    )
+        leads["label"] = np.where(is_positive, 1, np.where(is_negative, 0, np.nan))
+        leads["label_status"] = np.where(
+            is_positive, "positive", np.where(is_negative, "negative", "unknown")
+        )
 
-    label_summary = {
-        "positive": int((leads["label_status"] == "positive").sum()),
-        "negative": int((leads["label_status"] == "negative").sum()),
-        "unknown": int((leads["label_status"] == "unknown").sum()),
-    }
+        label_summary = {
+            "positive": int((leads["label_status"] == "positive").sum()),
+            "negative": int((leads["label_status"] == "negative").sum()),
+            "unknown": int((leads["label_status"] == "unknown").sum()),
+        }
 
-    details["labeling"] = {
-        "as_of_date": as_of.isoformat(),
-        "label_window_days": label_window,
-        "require_label_maturity": bool(cfg.label.require_label_maturity),
-        "maturity_cutoff_utc": maturity_cutoff.isoformat(),
-        "counts": label_summary,
-    }
+        details["labeling"] = {
+            "as_of_date": as_of.isoformat(),
+            "label_window_days": label_window,
+            "require_label_maturity": bool(cfg.label.require_label_maturity),
+            "maturity_cutoff_utc": maturity_cutoff.isoformat(),
+            "outcomes_available": True,
+            "counts": label_summary,
+        }
 
     # Feature engineering
     leads["lead_date"] = leads["created_time"].dt.date.astype("object")
