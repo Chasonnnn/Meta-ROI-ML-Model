@@ -48,13 +48,23 @@ def _ads_spend_by_level(
     a["date"] = pd.to_datetime(a["date"], errors="coerce")
     a = a[(a["date"] >= start_date) & (a["date"] <= end_date)]
     if level == "campaign":
-        keys = ["campaign_id", "campaign_name"]
+        id_keys = ["campaign_id"]
+        name_cols = ["campaign_name"]
     elif level == "adset":
-        keys = ["campaign_id", "campaign_name", "adset_id", "adset_name"]
+        id_keys = ["campaign_id", "adset_id"]
+        name_cols = ["campaign_name", "adset_name"]
     else:
         raise ValueError("level must be campaign or adset")
-    out = a.groupby(keys, as_index=False)["spend"].sum().rename(columns={"spend": "spend"})
-    return out
+
+    a = a.dropna(subset=id_keys)
+    agg: dict[str, tuple[str, str]] = {"spend": ("spend", "sum")}
+    for c in name_cols:
+        if c in a.columns:
+            agg[c] = (c, "first")
+    out = a.groupby(id_keys, as_index=False).agg(**agg)
+    # Stable-ish column order: ids, names, spend
+    cols = [c for c in id_keys + name_cols + ["spend"] if c in out.columns]
+    return out[cols]
 
 
 def compute_leaderboards(
@@ -62,6 +72,8 @@ def compute_leaderboards(
     ads: pd.DataFrame,
     min_lead_date: pd.Timestamp | None = None,
     max_lead_date: pd.Timestamp | None = None,
+    *,
+    min_segment_leads: int = 30,
 ) -> dict[str, pd.DataFrame]:
     df = scored.copy()
     df["lead_date"] = pd.to_datetime(df["lead_date"], errors="coerce")
@@ -74,30 +86,73 @@ def compute_leaderboards(
         min_lead_date = pd.to_datetime(ads["date"], errors="coerce").min()
         max_lead_date = pd.to_datetime(ads["date"], errors="coerce").max()
 
-    # Predicted ELV by segment
-    campaign_elv = (
-        df.dropna(subset=["campaign_id"]).groupby(["campaign_id", "campaign_name"], as_index=False)["elv"].sum()
-    ).rename(columns={"elv": "predicted_elv"})
-    adset_elv = (
-        df.dropna(subset=["campaign_id", "adset_id"]).groupby(
-            ["campaign_id", "campaign_name", "adset_id", "adset_name"], as_index=False
-        )["elv"].sum()
-    ).rename(columns={"elv": "predicted_elv"})
+    if int(min_segment_leads) < 0:
+        raise ValueError("min_segment_leads must be >= 0")
+
+    def _segment_stats(level: str) -> pd.DataFrame:
+        if level == "campaign":
+            id_keys = ["campaign_id"]
+            name_cols = ["campaign_name"]
+        elif level == "adset":
+            id_keys = ["campaign_id", "adset_id"]
+            name_cols = ["campaign_name", "adset_name"]
+        else:
+            raise ValueError("level must be campaign or adset")
+
+        d = df.dropna(subset=id_keys)
+        agg: dict[str, tuple[str, str]] = {
+            "lead_count": ("lead_id", "size") if "lead_id" in d.columns else ("elv", "size"),
+            "predicted_elv": ("elv", "sum"),
+            "avg_p_qualified_14d": ("p_qualified_14d", "mean"),
+            "avg_elv": ("elv", "mean"),
+        }
+        for c in name_cols:
+            if c in d.columns:
+                agg[c] = (c, "first")
+        if "label" in d.columns:
+            agg["labeled_count"] = ("label", "count")
+            agg["positive_rate_labeled"] = ("label", "mean")
+        out = d.groupby(id_keys, as_index=False).agg(**agg)
+        cols: list[str] = []
+        for c in id_keys + name_cols + list(agg.keys()):
+            if c in out.columns and c not in cols:
+                cols.append(c)
+        return out[cols]
+
+    campaign_stats = _segment_stats("campaign")
+    adset_stats = _segment_stats("adset")
 
     spend_campaign = _ads_spend_by_level(ads, "campaign", min_lead_date, max_lead_date)
     spend_adset = _ads_spend_by_level(ads, "adset", min_lead_date, max_lead_date)
 
-    lb_campaign = spend_campaign.merge(campaign_elv, on=["campaign_id", "campaign_name"], how="left")
+    lb_campaign = spend_campaign.merge(campaign_stats, on=["campaign_id"], how="outer", suffixes=("", "_stats"))
+    if "campaign_name" in lb_campaign.columns and "campaign_name_stats" in lb_campaign.columns:
+        lb_campaign["campaign_name"] = lb_campaign["campaign_name"].fillna(lb_campaign["campaign_name_stats"])
+        lb_campaign = lb_campaign.drop(columns=["campaign_name_stats"])
+    lb_campaign["spend"] = lb_campaign["spend"].fillna(0.0)
     lb_campaign["predicted_elv"] = lb_campaign["predicted_elv"].fillna(0.0)
+    lb_campaign["lead_count"] = lb_campaign["lead_count"].fillna(0).astype(int)
+    lb_campaign["low_volume"] = lb_campaign["lead_count"] < int(min_segment_leads)
     lb_campaign["elv_per_spend"] = lb_campaign["predicted_elv"] / lb_campaign["spend"].replace(0, np.nan)
-    lb_campaign = lb_campaign.sort_values("elv_per_spend", ascending=False)
-
-    lb_adset = spend_adset.merge(
-        adset_elv, on=["campaign_id", "campaign_name", "adset_id", "adset_name"], how="left"
+    lb_campaign = lb_campaign.sort_values(
+        ["low_volume", "elv_per_spend", "predicted_elv", "spend"],
+        ascending=[True, False, False, False],
     )
+
+    lb_adset = spend_adset.merge(adset_stats, on=["campaign_id", "adset_id"], how="outer", suffixes=("", "_stats"))
+    for name_col in ["campaign_name", "adset_name"]:
+        stats_col = f"{name_col}_stats"
+        if name_col in lb_adset.columns and stats_col in lb_adset.columns:
+            lb_adset[name_col] = lb_adset[name_col].fillna(lb_adset[stats_col])
+            lb_adset = lb_adset.drop(columns=[stats_col])
+    lb_adset["spend"] = lb_adset["spend"].fillna(0.0)
     lb_adset["predicted_elv"] = lb_adset["predicted_elv"].fillna(0.0)
+    lb_adset["lead_count"] = lb_adset["lead_count"].fillna(0).astype(int)
+    lb_adset["low_volume"] = lb_adset["lead_count"] < int(min_segment_leads)
     lb_adset["elv_per_spend"] = lb_adset["predicted_elv"] / lb_adset["spend"].replace(0, np.nan)
-    lb_adset = lb_adset.sort_values("elv_per_spend", ascending=False)
+    lb_adset = lb_adset.sort_values(
+        ["low_volume", "elv_per_spend", "predicted_elv", "spend"],
+        ascending=[True, False, False, False],
+    )
 
     return {"campaign": lb_campaign, "adset": lb_adset}
-
