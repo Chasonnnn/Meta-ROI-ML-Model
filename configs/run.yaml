@@ -6,6 +6,11 @@ paths:
   leads_path: data/byo/leads.csv
   outcomes_path: data/byo/outcomes.csv
   lead_to_ad_map_path: null  # e.g. data/byo/lead_to_ad_map.csv
+  # Optional enrichment inputs (all default to null)
+  ads_placement_path: null   # e.g. data/byo/ads_placement.csv
+  ads_geo_path: null         # e.g. data/byo/ads_geo.csv
+  adset_targeting_path: null # e.g. data/byo/adset_targeting.csv
+  ad_creatives_path: null    # e.g. data/byo/ad_creatives.csv
 
 label:
   label_window_days: 14
@@ -21,7 +26,7 @@ business:
   value_per_qualified: 1.0
 
 splits:
-  # If null, computed automatically from labeled (matured) leads distribution.
+  # Fractions must sum to 1.0.
   train_frac: 0.6
   calib_frac: 0.2
   test_frac: 0.2

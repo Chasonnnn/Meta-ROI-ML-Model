@@ -22,8 +22,9 @@ from .config import (
 )
 from .demo.generate import DemoDataSpec, generate_demo_data
 from .pipeline import run_build_table, run_score, run_train
+from .creatives import run_creative_analysis
 from .run_artifacts import RunContext, create_run_context, snapshot_config
-from .utils import ensure_dir
+from .utils import ensure_dir, read_json
 from .validate import render_validation_summary, validate_from_config
 
 
@@ -67,6 +68,12 @@ def build_table_cmd(config: Path = typer.Option(..., "--config", exists=True, di
         console.print(f"Profile: {ctx.run_dir / 'data_profile.md'}")
         if out.get("metadata"):
             console.print(f"Metadata: {ctx.run_dir / 'metadata.json'}")
+            warns = (out["metadata"] or {}).get("warnings") or []
+            if warns:
+                console.print("")
+                console.print("[yellow]Warnings:[/yellow]")
+                for w in warns:
+                    console.print(f"- {w}")
     except Exception as e:
         _die(str(e))
 
@@ -84,6 +91,20 @@ def train(config: Path = typer.Option(..., "--config", exists=True, dir_okay=Fal
         console.print(f"Metrics: {out['metrics_path']}")
         console.print(f"Predictions: {ctx.run_dir / 'predictions.csv'}")
         console.print(f"Report: {out['report_path']}")
+        try:
+            m = read_json(out["metrics_path"])
+            mm = (m or {}).get("model") or {}
+            lk = (mm.get("lift_at_k") or {})
+            console.print("")
+            console.print(
+                f"Test metrics: pr_auc={mm.get('pr_auc'):.4f} brier={mm.get('brier'):.4f} "
+                f"lift@k={lk.get('lift'):.3f} capture@k={lk.get('capture'):.3f}"
+            )
+            drift = (m or {}).get("drift") or {}
+            if drift.get("n_flagged", 0):
+                console.print(f"[yellow]Drift flagged:[/yellow] {drift.get('flagged_columns')}")
+        except Exception:
+            pass
     except Exception as e:
         _die(str(e))
 
@@ -101,6 +122,13 @@ def score(
         out = run_score(cfg, ctx, model_path=model)
         console.print(f"[green]Wrote run:[/green] {ctx.run_dir}")
         console.print(f"Predictions: {ctx.run_dir / 'predictions.csv'}")
+        if (ctx.run_dir / "drift.json").exists():
+            try:
+                d = read_json(ctx.run_dir / "drift.json")
+                if d.get("n_flagged", 0):
+                    console.print(f"[yellow]Drift flagged:[/yellow] {d.get('flagged_columns')}")
+            except Exception:
+                pass
         console.print(f"Report: {out['report_path']}")
     except Exception as e:
         _die(str(e))
@@ -155,6 +183,12 @@ def batch_score_cmd(
         console.print(f"Predictions: {ctx.run_dir / 'predictions.csv'}")
         if (ctx.run_dir / "drift.json").exists():
             console.print(f"Drift: {ctx.run_dir / 'drift.json'}")
+            try:
+                d = read_json(ctx.run_dir / "drift.json")
+                if d.get("n_flagged", 0):
+                    console.print(f"[yellow]Drift flagged:[/yellow] {d.get('flagged_columns')}")
+            except Exception:
+                pass
         console.print(f"Report: {out['report_path']}")
     except Exception as e:
         _die(str(e))
@@ -201,6 +235,10 @@ def demo(
                 leads_path=paths["leads"],
                 outcomes_path=paths["outcomes"],
                 lead_to_ad_map_path=None,
+                ads_placement_path=paths.get("ads_placement"),
+                ads_geo_path=paths.get("ads_geo"),
+                adset_targeting_path=paths.get("adset_targeting"),
+                ad_creatives_path=paths.get("ad_creatives"),
             ),
             label=LabelConfig(label_window_days=14, as_of_date=None, require_label_maturity=True),
             features=FeaturesConfig(ads_granularity="daily", feature_window_days=7, feature_lag_days=1),
@@ -251,6 +289,81 @@ def demo(
         out = run_train(cfg, ctx)
         console.print(f"[green]Demo (trained locally) wrote run:[/green] {ctx.run_dir}")
         console.print(f"Report: {out['report_path']}")
+    except Exception as e:
+        _die(str(e))
+
+
+@app.command("creative-analyze")
+def creative_analyze(
+    creative_map: Path = typer.Option(
+        ...,
+        "--creative-map",
+        exists=True,
+        dir_okay=False,
+        help="CSV mapping ad_id -> media_path (and optional creative_type).",
+    ),
+    media_dir: Optional[Path] = typer.Option(
+        None, "--media-dir", help="Base directory for relative media_path values."
+    ),
+    run_dir: Optional[Path] = typer.Option(
+        None,
+        "--run-dir",
+        help="Optional existing ELV run directory (used only to compute cluster performance summaries).",
+    ),
+    out_dir: Optional[Path] = typer.Option(
+        None,
+        "--out-dir",
+        help="Write outputs here. Default: <run_dir>/creative_analysis if --run-dir is set; otherwise runs/<new_run_id>/.",
+    ),
+    neighbors: int = typer.Option(10, "--neighbors", help="Top-K nearest neighbors per creative."),
+    clusters: int = typer.Option(10, "--clusters", help="KMeans clusters (auto-capped by number of creatives)."),
+    num_video_frames: int = typer.Option(4, "--num-video-frames", help="Frames to sample per video creative."),
+    device: str = typer.Option("cpu", "--device", help="cpu or cuda (if available)."),
+    model_name: str = typer.Option("ViT-B-32", "--model-name", help="OpenCLIP model name."),
+    pretrained: str = typer.Option("laion2b_s34b_b79k", "--pretrained", help="OpenCLIP pretrained weights identifier."),
+    batch_size: int = typer.Option(16, "--batch-size", help="Batch size for embedding images."),
+):
+    """
+    Compute CLIP embeddings for creative media and write similarity + clustering artifacts.
+
+    This is an optional workflow primarily for:
+    - finding similar creatives
+    - creative clustering
+    """
+    try:
+        if out_dir is None:
+            if run_dir is not None:
+                out_dir = Path(run_dir) / "creative_analysis"
+            else:
+                ctx = create_run_context(_repo_root())
+                out_dir = ctx.run_dir
+
+        outputs = run_creative_analysis(
+            creative_map_path=creative_map,
+            media_dir=media_dir,
+            out_dir=Path(out_dir),
+            run_dir=run_dir,
+            model_name=model_name,
+            pretrained=pretrained,
+            device=device,
+            batch_size=int(batch_size),
+            num_video_frames=int(num_video_frames),
+            neighbors=int(neighbors),
+            clusters=int(clusters),
+        )
+
+        console.print(f"[green]Wrote creative analysis to:[/green] {Path(out_dir)}")
+        console.print(f"Assets: {outputs.assets_csv}")
+        console.print(f"Embeddings: {outputs.embeddings_npz}")
+        console.print(f"Neighbors: {outputs.neighbors_csv}")
+        console.print(f"Clusters: {outputs.clusters_csv}")
+        if outputs.cluster_summary_csv is not None:
+            console.print(f"Cluster summary: {outputs.cluster_summary_csv}")
+        if outputs.warnings:
+            console.print("")
+            console.print("[yellow]Warnings:[/yellow]")
+            for w in outputs.warnings:
+                console.print(f"- {w}")
     except Exception as e:
         _die(str(e))
 

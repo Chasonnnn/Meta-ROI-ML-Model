@@ -13,6 +13,11 @@ class PathsConfig:
     leads_path: Path
     outcomes_path: Path | None
     lead_to_ad_map_path: Path | None
+    # Optional enrichment inputs (all CSV-first)
+    ads_placement_path: Path | None
+    ads_geo_path: Path | None
+    adset_targeting_path: Path | None
+    ad_creatives_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -78,6 +83,16 @@ def config_to_dict(cfg: RunConfig) -> dict[str, Any]:
             "outcomes_path": str(cfg.paths.outcomes_path) if cfg.paths.outcomes_path is not None else None,
             "lead_to_ad_map_path": str(cfg.paths.lead_to_ad_map_path)
             if cfg.paths.lead_to_ad_map_path is not None
+            else None,
+            "ads_placement_path": str(cfg.paths.ads_placement_path)
+            if cfg.paths.ads_placement_path is not None
+            else None,
+            "ads_geo_path": str(cfg.paths.ads_geo_path) if cfg.paths.ads_geo_path is not None else None,
+            "adset_targeting_path": str(cfg.paths.adset_targeting_path)
+            if cfg.paths.adset_targeting_path is not None
+            else None,
+            "ad_creatives_path": str(cfg.paths.ad_creatives_path)
+            if cfg.paths.ad_creatives_path is not None
             else None,
         },
         "label": {
@@ -145,6 +160,10 @@ def load_config(path: str | Path) -> RunConfig:
             leads_path=Path(paths_raw["leads_path"]),
             outcomes_path=_as_path(paths_raw.get("outcomes_path")),
             lead_to_ad_map_path=_as_path(paths_raw.get("lead_to_ad_map_path")),
+            ads_placement_path=_as_path(paths_raw.get("ads_placement_path")),
+            ads_geo_path=_as_path(paths_raw.get("ads_geo_path")),
+            adset_targeting_path=_as_path(paths_raw.get("adset_targeting_path")),
+            ad_creatives_path=_as_path(paths_raw.get("ad_creatives_path")),
         ),
         label=LabelConfig(
             label_window_days=int(label_raw.get("label_window_days", 14)),
