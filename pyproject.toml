@@ -31,6 +31,7 @@ lgbm = [
 ]
 ui = [
   "streamlit>=1.31",
+  "altair>=5.4",
 ]
 genai = [
   "google-genai>=1.0.0",

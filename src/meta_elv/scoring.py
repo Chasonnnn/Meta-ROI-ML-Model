@@ -194,6 +194,12 @@ def compute_leaderboards(
     lb_campaign["lead_count"] = lb_campaign["lead_count"].fillna(0).astype(int)
     lb_campaign["low_volume"] = lb_campaign["lead_count"] < int(min_segment_leads)
     lb_campaign["elv_per_spend"] = lb_campaign["predicted_elv"] / lb_campaign["spend"].replace(0, np.nan)
+    # Optional ROI-like helpers (ads context often uses ROAS = value/spend).
+    lb_campaign["cpl"] = lb_campaign["spend"] / lb_campaign["lead_count"].replace(0, np.nan)
+    lb_campaign["expected_profit"] = lb_campaign["predicted_elv"] - lb_campaign["spend"]
+    lb_campaign["roi"] = lb_campaign["expected_profit"] / lb_campaign["spend"].replace(0, np.nan)
+    if "avg_elv" in lb_campaign.columns:
+        lb_campaign["expected_profit_per_lead"] = lb_campaign["avg_elv"] - lb_campaign["cpl"]
     lb_campaign = lb_campaign.sort_values(
         ["low_volume", "elv_per_spend", "predicted_elv", "spend"],
         ascending=[True, False, False, False],
@@ -210,6 +216,11 @@ def compute_leaderboards(
     lb_adset["lead_count"] = lb_adset["lead_count"].fillna(0).astype(int)
     lb_adset["low_volume"] = lb_adset["lead_count"] < int(min_segment_leads)
     lb_adset["elv_per_spend"] = lb_adset["predicted_elv"] / lb_adset["spend"].replace(0, np.nan)
+    lb_adset["cpl"] = lb_adset["spend"] / lb_adset["lead_count"].replace(0, np.nan)
+    lb_adset["expected_profit"] = lb_adset["predicted_elv"] - lb_adset["spend"]
+    lb_adset["roi"] = lb_adset["expected_profit"] / lb_adset["spend"].replace(0, np.nan)
+    if "avg_elv" in lb_adset.columns:
+        lb_adset["expected_profit_per_lead"] = lb_adset["avg_elv"] - lb_adset["cpl"]
     lb_adset = lb_adset.sort_values(
         ["low_volume", "elv_per_spend", "predicted_elv", "spend"],
         ascending=[True, False, False, False],
