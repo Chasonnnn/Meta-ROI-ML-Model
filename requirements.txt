@@ -1,2 +1,2 @@
 # Hugging Face Spaces / Streamlit Community Cloud
--e .[ui]
+-e .[ui,genai]

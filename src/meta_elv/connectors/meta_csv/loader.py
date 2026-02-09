@@ -38,6 +38,37 @@ def _normalize_columns(df: pd.DataFrame, mapping: dict[str, list[str]]) -> tuple
 def _read_csv(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
+def _id_to_str(x: object) -> str:
+    # Avoid '123.0' for integer-like floats that come from CSV parsing.
+    if isinstance(x, float):
+        if x.is_integer():
+            return str(int(x))
+        return str(x)
+    if isinstance(x, int):
+        return str(int(x))
+    return str(x)
+
+
+def _coerce_id_columns_to_str(df: pd.DataFrame, cols: list[str]) -> tuple[pd.DataFrame, list[str]]:
+    warnings: list[str] = []
+    changed: list[str] = []
+    for c in cols:
+        if c not in df.columns:
+            continue
+        s0 = df[c]
+        non_null = s0.dropna()
+        # Heuristic: if a sample is already strings, skip to avoid noisy warnings.
+        sample = non_null.head(50).tolist()
+        if sample and all(isinstance(v, str) for v in sample):
+            continue
+        # Preserve nulls as nulls.
+        s = s0.where(s0.notna(), None)
+        df[c] = s.map(lambda v: _id_to_str(v) if v is not None else None)
+        changed.append(c)
+    if changed:
+        warnings.append(f"Coerced ID columns to strings: {changed}")
+    return df, warnings
+
 def _drop_non_canonical(df: pd.DataFrame, keep: list[str]) -> tuple[pd.DataFrame, list[str]]:
     warnings: list[str] = []
     keep_existing = [c for c in keep if c in df.columns]
@@ -90,6 +121,8 @@ def load_ads(path: Path) -> LoadResult:
         ],
     )
     warnings.extend(dropped_warnings)
+    df, id_warnings = _coerce_id_columns_to_str(df, ["campaign_id", "adset_id", "ad_id"])
+    warnings.extend(id_warnings)
     return LoadResult(df=df, warnings=warnings)
 
 
@@ -125,6 +158,8 @@ def load_leads(path: Path) -> LoadResult:
     ]
     df, dropped_warnings = _drop_non_canonical(df, keep)
     warnings.extend(dropped_warnings)
+    df, id_warnings = _coerce_id_columns_to_str(df, ["lead_id", "campaign_id", "adset_id", "ad_id"])
+    warnings.extend(id_warnings)
     return LoadResult(df=df, warnings=warnings)
 
 
@@ -147,6 +182,8 @@ def load_outcomes(path: Path) -> LoadResult:
     keep = [c for c in ["lead_id", "qualified_time"] if c in df.columns]
     df, dropped_warnings = _drop_non_canonical(df, keep)
     warnings.extend(dropped_warnings)
+    df, id_warnings = _coerce_id_columns_to_str(df, ["lead_id"])
+    warnings.extend(id_warnings)
     return LoadResult(df=df, warnings=warnings)
 
 
@@ -162,4 +199,142 @@ def load_lead_to_ad_map(path: Path) -> LoadResult:
     keep = [c for c in ["lead_id", "ad_id", "adset_id", "campaign_id"] if c in df.columns]
     df, dropped_warnings = _drop_non_canonical(df, keep)
     warnings.extend(dropped_warnings)
+    df, id_warnings = _coerce_id_columns_to_str(df, ["lead_id", "campaign_id", "adset_id", "ad_id"])
+    warnings.extend(id_warnings)
+    return LoadResult(df=df, warnings=warnings)
+
+
+def load_ads_placement(path: Path) -> LoadResult:
+    """
+    Daily ads breakdown by placement. Canonical columns:
+    - date, ad_id, placement, impressions, clicks, spend
+    """
+    df = _read_csv(path)
+    mapping = {
+        "date": ["date", "date_start", "day"],
+        "ad_id": ["ad_id", "ad id", "Ad ID"],
+        "placement": [
+            "placement",
+            "Placement",
+            "platform_position",
+            "Platform Position",
+            "publisher_platform",
+            "Publisher Platform",
+        ],
+        "impressions": ["impressions", "Impressions"],
+        "clicks": ["clicks", "Clicks", "link_clicks", "Link Clicks"],
+        "spend": ["spend", "amount_spent", "Amount Spent"],
+    }
+    df, warnings = _normalize_columns(df, mapping)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype("object")
+    for col in ["impressions", "clicks", "spend"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    keep = [c for c in ["date", "ad_id", "placement", "impressions", "clicks", "spend"] if c in df.columns]
+    df, dropped_warnings = _drop_non_canonical(df, keep)
+    warnings.extend(dropped_warnings)
+    df, id_warnings = _coerce_id_columns_to_str(df, ["ad_id"])
+    warnings.extend(id_warnings)
+    return LoadResult(df=df, warnings=warnings)
+
+
+def load_ads_geo(path: Path) -> LoadResult:
+    """
+    Daily ads breakdown by geo. Canonical columns:
+    - date, ad_id, geo, impressions, clicks, spend
+    """
+    df = _read_csv(path)
+    mapping = {
+        "date": ["date", "date_start", "day"],
+        "ad_id": ["ad_id", "ad id", "Ad ID"],
+        "geo": [
+            "geo",
+            "Geo",
+            "country",
+            "Country",
+            "region",
+            "Region",
+            "dma",
+            "DMA",
+            "state",
+            "State",
+            "location",
+            "Location",
+        ],
+        "impressions": ["impressions", "Impressions"],
+        "clicks": ["clicks", "Clicks", "link_clicks", "Link Clicks"],
+        "spend": ["spend", "amount_spent", "Amount Spent"],
+    }
+    df, warnings = _normalize_columns(df, mapping)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype("object")
+    for col in ["impressions", "clicks", "spend"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    keep = [c for c in ["date", "ad_id", "geo", "impressions", "clicks", "spend"] if c in df.columns]
+    df, dropped_warnings = _drop_non_canonical(df, keep)
+    warnings.extend(dropped_warnings)
+    df, id_warnings = _coerce_id_columns_to_str(df, ["ad_id"])
+    warnings.extend(id_warnings)
+    return LoadResult(df=df, warnings=warnings)
+
+
+def load_adset_targeting(path: Path) -> LoadResult:
+    """
+    Static adset targeting table. Canonical columns:
+    - adset_id, audience_keywords (free text / delimited list)
+    """
+    df = _read_csv(path)
+    mapping = {
+        "adset_id": ["adset_id", "ad set id", "Ad Set ID", "adset id"],
+        "audience_keywords": [
+            "audience_keywords",
+            "Audience Keywords",
+            "keywords",
+            "Keywords",
+            "interests",
+            "Interests",
+            "targeting",
+            "Targeting",
+        ],
+    }
+    df, warnings = _normalize_columns(df, mapping)
+    if "audience_keywords" in df.columns:
+        df["audience_keywords"] = df["audience_keywords"].astype("object")
+    keep = [c for c in ["adset_id", "audience_keywords"] if c in df.columns]
+    df, dropped_warnings = _drop_non_canonical(df, keep)
+    warnings.extend(dropped_warnings)
+    df, id_warnings = _coerce_id_columns_to_str(df, ["adset_id"])
+    warnings.extend(id_warnings)
+    return LoadResult(df=df, warnings=warnings)
+
+
+def load_ad_creatives(path: Path) -> LoadResult:
+    """
+    Static ad creatives table. Canonical columns:
+    - ad_id, creative_type (e.g. image/video)
+    """
+    df = _read_csv(path)
+    mapping = {
+        "ad_id": ["ad_id", "ad id", "Ad ID"],
+        "creative_type": [
+            "creative_type",
+            "Creative Type",
+            "media_type",
+            "Media Type",
+            "asset_type",
+            "Asset Type",
+            "type",
+            "Type",
+        ],
+    }
+    df, warnings = _normalize_columns(df, mapping)
+    if "creative_type" in df.columns:
+        df["creative_type"] = df["creative_type"].astype("object")
+    keep = [c for c in ["ad_id", "creative_type"] if c in df.columns]
+    df, dropped_warnings = _drop_non_canonical(df, keep)
+    warnings.extend(dropped_warnings)
+    df, id_warnings = _coerce_id_columns_to_str(df, ["ad_id"])
+    warnings.extend(id_warnings)
     return LoadResult(df=df, warnings=warnings)
