@@ -27,6 +27,10 @@ def test_train_metrics_include_drift_psi() -> None:
             leads_path=Path("leads.csv"),  # unused by train_and_evaluate
             outcomes_path=None,
             lead_to_ad_map_path=None,
+            ads_placement_path=None,
+            ads_geo_path=None,
+            adset_targeting_path=None,
+            ad_creatives_path=None,
         ),
         label=LabelConfig(label_window_days=14, as_of_date=None, require_label_maturity=True),
         features=FeaturesConfig(ads_granularity="daily", feature_window_days=7, feature_lag_days=1),
