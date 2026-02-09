@@ -32,6 +32,17 @@ lgbm = [
 ui = [
   "streamlit>=1.31",
 ]
+genai = [
+  "google-genai>=1.0.0",
+]
+embeddings = [
+  # Optional: local creative media embeddings + clustering (heavier deps).
+  "open-clip-torch>=2.24.0",
+  "opencv-python-headless>=4.8",
+  "pillow>=10.0",
+  "torch>=2.2",
+  "torchvision>=0.17",
+]
 
 [project.scripts]
 elv = "meta_elv.cli:main"
