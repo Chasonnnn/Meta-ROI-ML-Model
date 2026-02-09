@@ -1,15 +1,18 @@
-# Workplan (6 Weeks)
+# Workplan (Milestones)
 
 This project is designed to read like a small **ML platform**: CSV contracts, self-serve CLI, reproducible runs, and a score-first demo UI.
 
-## Current Status (As Of 2026-02-08)
+## Current Status (As Of 2026-02-09)
 
 - Week 1: Done (scaffolding, contracts, demo data, validate)
 - Week 2: Done (joins + maturity-safe labels + daily-ads leakage lag + rolling features)
 - Week 3: Mostly done (time split, calibration, metrics, baseline campaign-rate, report). LightGBM is optional and may require system OpenMP on macOS.
 - Week 4: Done (ELV outputs, leaderboards with min-volume guardrails, run metadata, model/data cards)
 - Week 5: Done (Streamlit score-first demo + bundled synthetic demo model)
-- Week 6: Mostly done (CI exists; drift PSI added to training + score runs; batch scoring added; starter docs added under docs/)
+- Week 6: Done (CI, drift PSI, batch scoring, and docs under docs/)
+- Week 7: Done (optional enrichment signals: placement, geo, targeting, creatives)
+- Week 8: Done (optional GenAI advisor via Gemini; opt-in)
+- Week 9: Done (optional creative media embeddings: similarity + clustering)
 
 ## Week 1 — Scaffolding + Contracts + Demo Data
 
@@ -116,3 +119,69 @@ Completion standard:
 - Scoring can optionally emit drift results and flag high PSI.
 - CI passes on PRs (tests include maturity + leakage + join strategy).
 - A stranger can succeed without asking repo-specific questions.
+
+## Week 7 — Optional Enrichment Signals (Placement / Geo / Targeting / Creative)
+
+Goal: Support richer ads context signals without breaking the CSV-first, leakage-safe pipeline.
+
+Work:
+- Extend config + validation for optional inputs:
+  - `paths.ads_placement_path` (`ads_placement.csv`)
+  - `paths.ads_geo_path` (`ads_geo.csv`)
+  - `paths.adset_targeting_path` (`adset_targeting.csv`)
+  - `paths.ad_creatives_path` (`ad_creatives.csv`)
+- Implement connector loaders that normalize these inputs to canonical columns.
+- Add leakage-safe, rolling-window summary features:
+  - spend-share entropy and top-1 share for placement and geo
+  - count of active placements/geos in the window
+- Add audience keyword features as deterministic numeric hashes (to avoid giant one-hot vectors).
+- Add creative-type features (hashed or low-cardinality one-hot) without exploding feature space.
+- Update report/profile to show which enrichments were present and any join/coverage stats.
+
+Completion standard:
+- `elv validate` reports required columns + coverage summaries for each provided enrichment CSV.
+- `elv build-table` produces enrichment-derived features that respect `feature_lag_days` (no same-day leakage).
+- Tests cover: lag exclusion for enrichment breakdowns, targeting join behavior, and stable hashing.
+
+## Week 8 — GenAI Advisor (Optional; Gemini)
+
+Goal: Provide credible, opt-in suggestions for targeting and creative improvements without contaminating the ML pipeline or leaking PII.
+
+Work:
+- Add a small `meta_elv.genai` module with a single public entrypoint (Gemini-backed) for:
+  - “targeting suggestions” from audience keywords + performance summaries
+  - “creative suggestions” from optional image/video uploads + performance summaries
+- Streamlit UI integration:
+  - gated behind an API key (no key => feature disabled)
+  - strong privacy warning (“uploads may be sent to a third-party API”)
+  - never send lead rows; only aggregate metrics + user-provided context
+- Add docs:
+  - how to set `GEMINI_API_KEY` locally
+  - how to set Space secrets on Hugging Face
+
+Completion standard:
+- Streamlit demo still works without any API key.
+- With `GEMINI_API_KEY` set, the UI can generate suggestions reliably for demo data.
+- Errors are friendly (missing key, missing dependency, API failure, oversized media).
+
+## Week 9 — Creative Media Embeddings (Optional; Similarity + Clustering)
+
+Goal: Provide “platform-y” creative analysis surfaces (neighbors + clusters) using image/video embeddings, without changing the ELV predictive pipeline.
+
+Work:
+- Add an optional `embeddings` extra (PyTorch + OpenCLIP + OpenCV).
+- Implement a CLI command: `elv creative-analyze`.
+- CLI reads `creative_media.csv` (ad_id -> media_path).
+- CLI embeds images and sample+embeds video frames (mean-pooled).
+- CLI computes top-K cosine neighbors per creative.
+- CLI computes KMeans clusters.
+- If `--run-dir` is provided and contains `predictions.csv`, produce a cluster-level performance summary (e.g. predicted ELV by cluster).
+- Streamlit integration supports uploading `creative_media.csv` + media files.
+- Streamlit performs dependency checks and shows friendly “install extra” messaging.
+- Streamlit never persists uploaded media to `runs/` by default.
+- Report integration includes creative cluster summary + sample neighbors when available.
+
+Completion standard:
+- `elv creative-analyze --creative-map creative_media.csv` writes: `creative_neighbors.csv`, `creative_clusters.csv`, `creative_embeddings.npz`.
+- When `--run-dir` is provided and has `predictions.csv`, it also writes `creative_cluster_summary.csv`.
+- Tests cover the neighbor table shape/constraints and KMeans cluster output shape (no torch required).
