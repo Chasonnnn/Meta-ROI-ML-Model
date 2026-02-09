@@ -35,6 +35,40 @@ Required columns:
 - `lead_id`
 - `qualified_time` (timestamp; null/empty if never qualified)
 
+## Optional Enrichment CSVs
+
+These inputs are optional, but can improve model quality and enable richer suggestions.
+
+If you train a model using any enrichment file, you must provide the same file(s) when scoring with that model.
+
+### ads_placement.csv (daily)
+Required columns:
+- `date` (YYYY-MM-DD)
+- `ad_id`
+- `placement`
+- `impressions` (int)
+- `clicks` (int)
+- `spend` (float)
+
+### ads_geo.csv (daily)
+Required columns:
+- `date` (YYYY-MM-DD)
+- `ad_id`
+- `geo` (e.g. country/region/state code)
+- `impressions` (int)
+- `clicks` (int)
+- `spend` (float)
+
+### adset_targeting.csv (static)
+Required columns:
+- `adset_id`
+- `audience_keywords` (free text or delimited list)
+
+### ad_creatives.csv (static)
+Required columns:
+- `ad_id`
+- `creative_type` (e.g. image/video)
+
 ## Join Rules
 
 Join strategy order:
@@ -63,5 +97,8 @@ paths:
   leads_path: data/byo/leads.csv
   outcomes_path: data/byo/outcomes.csv
   lead_to_ad_map_path: null
+  ads_placement_path: null
+  ads_geo_path: null
+  adset_targeting_path: null
+  ad_creatives_path: null
 ```
-

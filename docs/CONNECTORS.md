@@ -17,6 +17,10 @@ Example signature (see `LoadResult`):
 - `load_ads(path) -> LoadResult`
 - `load_leads(path) -> LoadResult`
 - `load_outcomes(path) -> LoadResult`
+- `load_ads_placement(path) -> LoadResult` (optional enrichment)
+- `load_ads_geo(path) -> LoadResult` (optional enrichment)
+- `load_adset_targeting(path) -> LoadResult` (optional enrichment)
+- `load_ad_creatives(path) -> LoadResult` (optional enrichment)
 
 ## Privacy Default
 
@@ -33,4 +37,3 @@ Reason: `leads.csv` can contain PII (names, emails, phone numbers). By keeping o
    - timestamps (parse to UTC where possible)
    - numeric columns (coerce errors to NaN so validation can report)
 4. Ensure `validate` and `table_builder` can consume the canonical outputs.
-

@@ -70,6 +70,27 @@ All business logic must live in reusable Python modules under `src/meta_elv/`.
 - Streamlit UI should call the same core functions as the CLI.
 - Connectors must normalize to canonical schema in `src/meta_elv/connectors/`.
 
+## 5.1) Leakage-Safe Feature Rules (Non-Negotiable)
+
+- Any features derived from daily aggregates (ads performance, placement breakdowns, geo breakdowns) must respect `features.feature_lag_days` so same-day post-lead activity never leaks into training or scoring.
+- If a model is trained with optional enrichment inputs (placement/geo/targeting/creative), scoring runs must either:
+  - provide the same inputs, or
+  - fail with a friendly error that explains what is missing and how to fix it.
+
+## 5.2) GenAI Integrations (Opt-In Only)
+
+- Any GenAI feature (Gemini, Hugging Face Inference, etc.) must be **disabled by default** and enabled only when a user provides an API key via environment variables or Streamlit secrets.
+- Never send lead-level rows (or any PII-like fields) to GenAI providers. Only send aggregate summaries (leaderboards, counts, rates) plus user-authored context.
+- Never write API keys to disk, to `runs/`, or to logs.
+- In the Streamlit UI, clearly warn users that uploaded media may be sent to a third-party API.
+
+## 5.3) Creative Media (Embeddings) Handling
+
+- Treat uploaded ad creatives (images/videos) as potentially sensitive. Do not commit them and do not persist them to `runs/` by default.
+- Streamlit should store uploaded media in a temporary directory for analysis and delete it after the session step completes (only derived artifacts may be saved).
+- The creative-embeddings workflow must be optional and gated behind the `embeddings` extra. Core CLI/UI flows must still run without PyTorch/OpenCLIP/OpenCV installed.
+- Any optional-dependency import must fail with a friendly error explaining how to install (`uv sync --extra embeddings`).
+
 ## 6) Tech Stack
 
 - Language: Python
@@ -81,4 +102,3 @@ All business logic must live in reusable Python modules under `src/meta_elv/`.
 - Reporting: matplotlib + HTML report generation
 - Quality: pytest, ruff
 - Reproducibility: run artifacts under `runs/<run_id>/` with metadata
-
