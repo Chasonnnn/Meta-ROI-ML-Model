@@ -37,9 +37,18 @@ def score_table(cfg: RunConfig, table: pd.DataFrame, bundle: ModelBundle) -> pd.
     df = table.copy()
     num_cols = bundle.feature_columns.get("numeric", [])
     cat_cols = bundle.feature_columns.get("categorical", [])
-    cols = [c for c in (num_cols + cat_cols) if c in df.columns]
-    if not cols:
+    expected = [str(c) for c in (num_cols + cat_cols)]
+    if not expected:
         raise RuntimeError("Model bundle does not specify feature columns compatible with this table.")
+    missing = [c for c in expected if c not in df.columns]
+    if missing:
+        preview = ", ".join(missing[:20]) + (" ..." if len(missing) > 20 else "")
+        raise RuntimeError(
+            "Input table is missing feature columns required by the model: "
+            f"{preview}. If you trained with optional enrichment CSVs, you must provide them when scoring too "
+            "(or retrain a model without those features)."
+        )
+    cols = expected
 
     prob = bundle.model.predict_proba(df[cols])[:, 1]
     df["p_qualified_14d"] = prob.astype(float)

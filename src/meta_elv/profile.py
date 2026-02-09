@@ -23,6 +23,7 @@ def build_data_profile(result: BuildTableResult) -> dict[str, Any]:
     df = result.table
     profile: dict[str, Any] = {
         "rows": int(len(df)),
+        "warnings": list(result.warnings),
         "join": {
             "strategy": result.join_strategy,
             "match_rate": result.join_match_rate,
@@ -77,6 +78,18 @@ def write_data_profile(run_dir: Path, profile: dict[str, Any]) -> None:
     if feats:
         lines.append(f"- Feature window days: {feats.get('feature_window_days')}")
         lines.append(f"- Feature lag days: {feats.get('feature_lag_days')}")
+    enrich = ((profile.get("details") or {}).get("enrichments") or {})
+    if enrich:
+        lines.append("")
+        lines.append("## Enrichments")
+        for name, info in enrich.items():
+            if not isinstance(info, dict):
+                continue
+            cov = info.get("lead_feature_coverage")
+            if cov is None:
+                cov = info.get("lead_join_coverage")
+            cov_s = f"{float(cov):.1%}" if isinstance(cov, (int, float)) else "n/a"
+            lines.append(f"- {name}: lead_coverage={cov_s}")
     pr = labeling.get("positive_rate_labeled")
     if pr is not None:
         lines.append(f"- Positive rate (labeled only): {pr:.2%}")
@@ -87,5 +100,12 @@ def write_data_profile(run_dir: Path, profile: dict[str, Any]) -> None:
         lines.append("## Top Null%")
         for k, v in worst:
             lines.append(f"- {k}: {v:.1%}")
+
+    warns = profile.get("warnings") or []
+    if warns:
+        lines.append("")
+        lines.append("## Warnings")
+        for w in warns:
+            lines.append(f"- {w}")
 
     (run_dir / "data_profile.md").write_text("\n".join(lines) + "\n")

@@ -8,7 +8,15 @@ import pandas as pd
 
 from .config import RunConfig
 from .connectors import meta_csv
-from .connectors.base import ADS_REQUIRED, LEADS_REQUIRED, OUTCOMES_REQUIRED
+from .connectors.base import (
+    AD_CREATIVES_REQUIRED,
+    ADSET_TARGETING_REQUIRED,
+    ADS_GEO_REQUIRED,
+    ADS_PLACEMENT_REQUIRED,
+    ADS_REQUIRED,
+    LEADS_REQUIRED,
+    OUTCOMES_REQUIRED,
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +66,14 @@ def validate_from_config(cfg: RunConfig) -> ValidationResult:
         require_file(cfg.paths.outcomes_path, "outcomes")
     if cfg.paths.lead_to_ad_map_path is not None:
         require_file(cfg.paths.lead_to_ad_map_path, "lead_to_ad_map")
+    if cfg.paths.ads_placement_path is not None:
+        require_file(cfg.paths.ads_placement_path, "ads_placement")
+    if cfg.paths.ads_geo_path is not None:
+        require_file(cfg.paths.ads_geo_path, "ads_geo")
+    if cfg.paths.adset_targeting_path is not None:
+        require_file(cfg.paths.adset_targeting_path, "adset_targeting")
+    if cfg.paths.ad_creatives_path is not None:
+        require_file(cfg.paths.ad_creatives_path, "ad_creatives")
 
     if errors:
         return ValidationResult(ok=False, errors=errors, warnings=warnings, details=details)
@@ -138,6 +154,80 @@ def validate_from_config(cfg: RunConfig) -> ValidationResult:
             "null_pct": _null_pct(outcomes, OUTCOMES_REQUIRED),
         }
 
+    # Optional enrichment files (validated only if configured)
+    def _validate_optional_csv(
+        name: str,
+        path: Path | None,
+        loader_fn,
+        required_cols: list[str],
+        extra_null_cols: list[str] | None = None,
+    ) -> None:
+        nonlocal errors, warnings, details
+        if path is None:
+            return
+        try:
+            lr = loader_fn(path)
+            warnings.extend(lr.warnings)
+            df = lr.df
+        except Exception as e:  # pragma: no cover
+            errors.append(f"Failed to read {name}: {e}")
+            return
+        missing = _missing_cols(df, required_cols)
+        if missing:
+            errors.append(f"{name} missing required columns: {missing}")
+        cols_for_nulls = required_cols + (extra_null_cols or [])
+        info: dict[str, Any] = {
+            "path": str(path),
+            "rows": int(len(df)),
+            "missing_required_columns": missing,
+            "null_pct": _null_pct(df, cols_for_nulls),
+        }
+        # Join-quality sanity checks against ads.csv IDs
+        try:
+            if name in {"ads_placement", "ads_geo", "ad_creatives"} and "ad_id" in df.columns and "ad_id" in ads.columns:
+                ads_ids = set(ads["ad_id"].dropna().astype("object").astype(str).tolist())
+                if ads_ids:
+                    cov = float(df["ad_id"].dropna().astype("object").astype(str).isin(ads_ids).mean())
+                    info["mapping_coverage_to_ads"] = cov
+                    if cov < 0.90:
+                        warnings.append(f"{name}: low ad_id coverage vs ads.csv ({cov:.1%}).")
+            if name == "adset_targeting" and "adset_id" in df.columns and "adset_id" in ads.columns:
+                ads_ids = set(ads["adset_id"].dropna().astype("object").astype(str).tolist())
+                if ads_ids:
+                    cov = float(df["adset_id"].dropna().astype("object").astype(str).isin(ads_ids).mean())
+                    info["mapping_coverage_to_ads"] = cov
+                    if cov < 0.90:
+                        warnings.append(f"{name}: low adset_id coverage vs ads.csv ({cov:.1%}).")
+        except Exception:
+            pass
+
+        details["files"][name] = info
+
+    _validate_optional_csv(
+        "ads_placement",
+        cfg.paths.ads_placement_path,
+        meta_csv.load_ads_placement,
+        ADS_PLACEMENT_REQUIRED,
+    )
+    _validate_optional_csv(
+        "ads_geo",
+        cfg.paths.ads_geo_path,
+        meta_csv.load_ads_geo,
+        ADS_GEO_REQUIRED,
+    )
+    _validate_optional_csv(
+        "adset_targeting",
+        cfg.paths.adset_targeting_path,
+        meta_csv.load_adset_targeting,
+        ADSET_TARGETING_REQUIRED,
+    )
+    _validate_optional_csv(
+        "ad_creatives",
+        cfg.paths.ad_creatives_path,
+        meta_csv.load_ad_creatives,
+        AD_CREATIVES_REQUIRED,
+    )
+
     # Join-path sanity checks (warn loudly; table builder can still attempt name join fallback)
     has_join_ids = False
     for c in ["ad_id", "adset_id", "campaign_id"]:
@@ -201,5 +291,8 @@ def render_validation_summary(result: ValidationResult) -> str:
                 worst = sorted(nulls.items(), key=lambda kv: kv[1], reverse=True)[:5]
                 worst_s = ", ".join([f"{k}={v:.1%}" for k, v in worst])
                 lines.append(f"  top null%: {worst_s}")
+            cov = info.get("mapping_coverage_to_ads")
+            if isinstance(cov, (int, float)):
+                lines.append(f"  mapping coverage vs ads.csv: {float(cov):.1%}")
 
     return "\n".join(lines)

@@ -35,7 +35,10 @@ def run_build_table(cfg: RunConfig, ctx: RunContext) -> dict[str, Any]:
         "join": {"strategy": res.join_strategy, "match_rate": res.join_match_rate},
         "labeling": {"as_of_date": res.as_of_date.isoformat(), "counts": res.label_summary},
         "leaderboards": {"min_segment_leads": int(cfg.reporting.min_segment_leads)},
+        "warnings": list(res.warnings),
     }
+    if (res.details or {}).get("enrichments"):
+        metadata["enrichments"] = res.details["enrichments"]
     write_metadata(ctx.run_dir, metadata)
     return {"result": res, "profile": profile, "metadata": metadata}
 
